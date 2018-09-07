@@ -334,7 +334,6 @@ case class MatrixRangeReader(nRows: Int, nCols: Int, nPartitions: Option[Int]) e
     globalType = TStruct.empty(),
     colKey = Array("col_idx"),
     colType = TStruct("col_idx" -> TInt32()),
-    rowPartitionKey = Array("row_idx"),
     rowKey = Array("row_idx"),
     rowType = TStruct("row_idx" -> TInt32()),
     entryType = TStruct.empty())
@@ -361,7 +360,7 @@ case class MatrixRangeReader(nRows: Int, nCols: Int, nPartitions: Option[Int]) e
       OrderedRVD.empty(hc.sc, fullType.orvdType)
     else {
       OrderedRVD(fullType.orvdType,
-        new OrderedRVDPartitioner(fullType.rowPartitionKey.toArray,
+        new OrderedRVDPartitioner(
           fullType.rowKeyStruct,
           Array.tabulate(nPartitionsAdj) { i =>
             val start = partStarts(i)
@@ -830,6 +829,7 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
     // local things for serialization
     val oldNCols = mv.nCols
     val oldRVRowType = mv.typ.rvRowType
+    val oldEntriesIndex = mv.typ.entriesIdx
     val oldColsType = TArray(mv.typ.colType)
     val oldColValues = mv.colValues
     val oldColValuesBc = mv.colValues.broadcast
@@ -838,7 +838,6 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
 
     val newRVType = typ.rvRowType
     val newColType = typ.colType
-    val newEntriesIndex = typ.entriesIdx
 
     val keyIndices = mv.typ.colKey.map(k => mv.typ.colType.field(k).index)
     val keys = oldColValuesBc.value.map { a => Row.fromSeq(keyIndices.map(a.asInstanceOf[Row].get)) }.toSet.toArray
@@ -941,7 +940,6 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
 
     val mapPartitionF = { (i: Int, ctx: RVDContext, it: Iterator[RegionValue]) =>
       val rvb = new RegionValueBuilder()
-      val newRV = RegionValue()
 
       val partitionRegion = ctx.freshContext.region
 
@@ -1011,8 +1009,9 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
         rvb.start(newRVType)
         rvb.startStruct()
         var k = 0
-        while (k < newEntriesIndex) {
-          rvb.addField(oldRVRowType, rv, k)
+        while (k < newRVType.size) {
+          if (k != oldEntriesIndex)
+            rvb.addField(oldRVRowType, rv, k)
           k += 1
         }
 
@@ -1023,13 +1022,6 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
           i += 1
         }
         rvb.endArray()
-        k += 1
-
-        while (k < newRVType.fields.length) {
-          rvb.addField(oldRVRowType, rv, k)
-          k += 1
-        }
-
         rvb.endStruct()
         rv.setOffset(rvb.end())
         rv
@@ -1134,8 +1126,7 @@ case class MatrixMapRows(child: MatrixIR, newRow: IR, newKey: Option[(IndexedSeq
 
   val typ: MatrixType = {
     val newRowKey = newKey.map { case (pk, k) => pk ++ k }.getOrElse(child.typ.rowKey)
-    val newPartitionKey = newKey.map { case (pk, _) => pk }.getOrElse(child.typ.rowPartitionKey)
-    child.typ.copy(rvRowType = newRVRow.typ.asInstanceOf[TStruct], rowKey = newRowKey, rowPartitionKey = newPartitionKey)
+    child.typ.copy(rvRowType = newRVRow.typ.asInstanceOf[TStruct], rowKey = newRowKey)
   }
 
   override def partitionCounts: Option[IndexedSeq[Long]] = child.partitionCounts
@@ -1794,8 +1785,9 @@ case class MatrixAnnotateRowsTable(
     val tv = table.execute(hc)
     key match {
       // annotateRowsIntervals
-      case None if child.typ.rowPartitionKey.length == 1 &&
-        table.typ.keyType.exists(k => k.size == 1 && k.types(0) == TInterval(child.typ.rowKeyStruct.types(0))) =>
+      case None if table.typ.keyType.exists { k =>
+        k.size == 1 && k.types(0) == TInterval(child.typ.rowKeyStruct.types(0))
+      } =>
         val typOrdering = child.typ.rowKeyStruct.types(0).ordering
 
         val typToInsert: Type = table.typ.valueType
@@ -1811,12 +1803,10 @@ case class MatrixAnnotateRowsTable(
             val r = SafeRow(tableRowType, rv)
             val interval = r.getAs[Interval](tableKeyIdx)
             if (interval != null) {
-              val rangeTree = partBc.value.rangeTree
-              val kOrd = partBc.value.kType.ordering
               val wrappedInterval = interval.copy(
                 start = Row(interval.start),
                 end = Row(interval.end))
-              rangeTree.queryOverlappingValues(kOrd, wrappedInterval).map(i => (i, r))
+              partBc.value.getPartitionRange(wrappedInterval).map(i => (i, r))
             } else
               Iterator()
           }
@@ -1829,7 +1819,7 @@ case class MatrixAnnotateRowsTable(
         }).values
 
         val rvRowType = child.typ.rvRowType
-        val pkIndex = rvRowType.fieldIdx(child.typ.rowPartitionKey(0))
+        val kIndex = rvRowType.fieldIdx(child.typ.rowKey(0))
         val newMatrixType = child.typ.copy(rvRowType = newRVType)
         val newRVD = prev.rvd.zipPartitionsPreservesPartitioning(
           newMatrixType.orvdType,
@@ -1848,8 +1838,8 @@ case class MatrixAnnotateRowsTable(
 
           it.map { rv =>
             val ur = new UnsafeRow(rvRowType, rv)
-            val pk = ur.get(pkIndex)
-            val queries = iTree.queryValues(typOrdering, pk)
+            val k0 = ur.get(kIndex)
+            val queries = iTree.queryValues(typOrdering, k0)
             val value: Annotation = if (queries.isEmpty)
               null
             else
@@ -1985,7 +1975,6 @@ case class TableToMatrixTable(
     child.typ.globalType,
     colKey,
     colType,
-    partitionKey,
     rowKey,
     rowType,
     entryType)
@@ -2340,13 +2329,11 @@ case class UnlocalizeEntries(rowsEntries: TableIR, cols: TableIR, entryFieldName
   }
 
   val typ: MatrixType = MatrixType(
-      rowsEntries.typ.globalType,
-      cols.typ.keyOrEmpty,
-      cols.typ.rowType,
-      rowsEntries.typ.keyOrEmpty,
-      rowsEntries.typ.keyOrEmpty,
-      newRowType
-    )
+    rowsEntries.typ.globalType,
+    cols.typ.keyOrEmpty,
+    cols.typ.rowType,
+    rowsEntries.typ.keyOrEmpty,
+    newRowType)
 
   def children: IndexedSeq[BaseIR] = Array(rowsEntries, cols)
 

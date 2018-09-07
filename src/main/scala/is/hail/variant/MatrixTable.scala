@@ -188,17 +188,15 @@ object MatrixTable {
     new MatrixTable(datasets.head.hc, MatrixUnionRows(datasets.map(_.ast).toFastIndexedSeq))
   }
 
-  def fromRowsTable(kt: Table, partitionKey: java.util.ArrayList[String] = null): MatrixTable = {
+  def fromRowsTable(kt: Table): MatrixTable = {
     require(!kt.key.isEmpty)
     val matrixType = MatrixType.fromParts(
       kt.globalSignature,
       Array.empty[String],
       TStruct.empty(),
-      Option(partitionKey).map(_.asScala.toArray.toFastIndexedSeq).getOrElse(kt.key.get),
       kt.key.get,
       kt.signature,
-      TStruct.empty()
-    )
+      TStruct.empty())
     val rvRowType = matrixType.rvRowType
 
     val oldRowType = kt.signature
@@ -282,7 +280,7 @@ case class VSMSubgen(
         }
 
       MatrixTable.fromLegacy(hc,
-        MatrixType.fromParts(globalSig, Array("s"), finalSASig, finalRowPartitionKey, rowKey, finalVASig, tSig),
+        MatrixType.fromParts(globalSig, Array("s"), finalSASig, rowKey, finalVASig, tSig),
         global,
         sampleIds.zip(saValues).map { case (id, sa) => sIns(sa, id) },
         hc.sc.parallelize(rows.map { case (v, (va, gs)) =>
@@ -377,14 +375,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     }
   }
 
-  def requirePartitionKeyLocus(method: String) {
-    rowPartitionKeyTypes match {
-      case Array(_: TLocus) =>
-      case t =>
-        fatal(s"in $method: partition key must be type 'locus', found: $t")
-    }
-  }
-
   def requireColKeyString(method: String) {
     colKeyTypes match {
       case Array(_: TString) =>
@@ -409,7 +399,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
   val rvRowType: TStruct = matrixType.rvRowType
   val rowKey: IndexedSeq[String] = matrixType.rowKey
-  val rowPartitionKey: IndexedSeq[String] = matrixType.rowPartitionKey
   val entriesIndex: Int = matrixType.entriesIdx
 
   val colKey: IndexedSeq[String] = matrixType.colKey
@@ -423,10 +412,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     .toArray
 
   val rowKeyStruct: TStruct = TStruct(rowKey.zip(rowKeyTypes): _*)
-
-  val rowPartitionKeyTypes: Array[Type] = rowPartitionKey
-    .map(s => matrixType.rowType.types(matrixType.rowType.fieldIdx(s)))
-    .toArray
 
   lazy val value: MatrixValue = {
     val opt = LiftLiterals(ir.Optimize(ast)).asInstanceOf[MatrixIR]
@@ -469,8 +454,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     assert(partitionKeys.length <= keys.length)
     assert(keys.zip(partitionKeys).forall { case (k, pk) => k == pk })
 
-    val newMatrixType = matrixType.copy(rowKey = keys,
-      rowPartitionKey = partitionKeys)
+    val newMatrixType = matrixType.copy(rowKey = keys)
 
     copyMT(matrixType = newMatrixType,
       rvd = OrderedRVD.coerce(newMatrixType.orvdType, rvd))
@@ -625,14 +609,12 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     new MatrixTable(hc, MatrixMapCols(ast, ir, newKey))
   }
 
-  def selectRows(expr: String, newKey: java.util.ArrayList[java.util.ArrayList[String]]): MatrixTable = {
-    assert(Option(newKey).forall(_.size() == 2))
-    selectRows(expr, Option(newKey).map(k => (k.get(0).asScala.toFastIndexedSeq, k.get(1).asScala.toFastIndexedSeq)))
-  }
+  def selectRows(expr: String, newKey: java.util.ArrayList[String]): MatrixTable =
+    selectRows(expr, Option(newKey).map(_.asScala.toFastIndexedSeq))
 
-  def selectRows(expr: String, newKey: Option[(IndexedSeq[String], IndexedSeq[String])]): MatrixTable = {
+  def selectRows(expr: String, newKey: Option[IndexedSeq[String]]): MatrixTable = {
     val rowsIR = Parser.parse_value_ir(expr, IRParserEnvironment(matrixType.refMap))
-    new MatrixTable(hc, MatrixMapRows(ast, rowsIR, newKey))
+    new MatrixTable(hc, MatrixMapRows(ast, rowsIR, newKey.map(a => (a, FastIndexedSeq()))))
   }
 
   def selectEntries(expr: String): MatrixTable = {
@@ -983,8 +965,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
       TStruct(entryType.required, newFieldNames.zip(entryType.types): _*)
     }
 
-    val (pk, newRowKey, newRVRowType) = {
-      val newPK = rowPartitionKey.map { f => fieldMapRows.getOrElse(f, f) }
+    val (newRowKey, newRVRowType) = {
       val newKey = rowKey.map { f => fieldMapRows.getOrElse(f, f) }
       val newRVRowType = TStruct(rvRowType.required, rvRowType.fields.map { f =>
         f.name match {
@@ -992,7 +973,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
           case x => (fieldMapRows.getOrElse(x, x), f.typ)
         }
       }: _*)
-      (newPK, newKey, newRVRowType)
+      (newKey, newRVRowType)
     }
 
     val newGlobalType = if (fieldMapGlobals.isEmpty) globalType else {
@@ -1000,12 +981,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
       TStruct(globalType.required, newFieldNames.zip(globalType.types): _*)
     }
 
-    val newMatrixType = MatrixType(newGlobalType,
-      newColKey,
-      newColType,
-      pk,
-      newRowKey,
-      newRVRowType)
+    val newMatrixType = MatrixType(newGlobalType, newColKey, newColType, newRowKey, newRVRowType)
 
     val newRVD = if (newMatrixType.orvdType == rvd.typ)
       rvd
@@ -1074,13 +1050,13 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
            |  left:  ${ globals.value }
            |  right: ${ that.globals.value }""".stripMargin)
     }
-    if (rowKey != that.rowKey || colKey != that.colKey || rowPartitionKey != that.rowPartitionKey) {
+    if (rowKey != that.rowKey || colKey != that.colKey) {
       metadataSame = false
       println(
         s"""
            |different keys:
-           |  left:  rk $rowKey, rpk $rowPartitionKey, ck $colKey
-           |  right: rk ${ that.rowKey }, rpk ${ that.rowPartitionKey }, ck ${ that.colKey }""".stripMargin)
+           |  left:  rk $rowKey, ck $colKey
+           |  right: rk ${ that.rowKey }, ck ${ that.colKey }""".stripMargin)
     }
     if (!metadataSame)
       println("metadata were not the same")
@@ -1149,7 +1125,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     globals: BroadcastRow = globals,
     colType: TStruct = colType,
     rvRowType: TStruct = rvRowType,
-    rowPartitionKey: IndexedSeq[String] = rowPartitionKey,
     rowKey: IndexedSeq[String] = rowKey,
     globalType: TStruct = globalType,
     entryType: TStruct = entryType): MatrixTable = {
@@ -1157,7 +1132,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
       globalType = globalType,
       colKey = colKey,
       colType = colType,
-      rowPartitionKey = rowPartitionKey,
       rowKey = rowKey,
       rvRowType = rvRowType)
     new MatrixTable(hc,

@@ -728,7 +728,7 @@ class LowerBoundOnOrderedCollection(IR):
                other.on_key == self.on_key
 
     def _compute_type(self, env, agg_env):
-        self.a._compute_type(env, agg_env)
+        self.ordered_collection._compute_type(env, agg_env)
         self.elem._compute_type(env, agg_env)
         self._type = tint32
 

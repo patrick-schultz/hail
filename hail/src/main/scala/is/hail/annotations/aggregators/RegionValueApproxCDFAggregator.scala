@@ -143,6 +143,7 @@ object ApproxCDFCombiner {
   ): ApproxCDFCombiner[T] = new ApproxCDFCombiner[T](
     Array.fill[Int](numLevels + 1)(capacity),
     Array.ofDim[T](capacity),
+    Array.fill[Int](numLevels)(0),
     1,
     dummy,
     dummy,
@@ -169,6 +170,7 @@ object ApproxCDFCombiner {
 class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ordering](
   val levels: Array[Int],
   val items: Array[T],
+  val compactionCounts: Array[Int],
   var numLevels: Int,
   var minValue: T,
   var maxValue: T,
@@ -177,7 +179,7 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
 ) extends Serializable {
 
   def copy(): ApproxCDFCombiner[T] =
-    new ApproxCDFCombiner[T](levels.clone(), items.clone(), numLevels, minValue, maxValue, rand)
+    new ApproxCDFCombiner[T](levels.clone(), items.clone(), compactionCounts.clone(), numLevels, minValue, maxValue, rand)
 
   def maxNumLevels = levels.length - 1
   def capacity = items.length
@@ -207,14 +209,16 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
     levels(0) = newBot
   }
 
-  def grow(newNumLevels: Int, newCapacity: Int): ApproxCDFCombiner[T] = {
+  def grow(newNumLevels: Int, newCapacity: Int, dummy: T = helper.dummyValue): ApproxCDFCombiner[T] = {
     require(newNumLevels > maxNumLevels && newCapacity > capacity)
     val newLevels = Array.ofDim[Int](newNumLevels + 1)
     val newItems = Array.ofDim[T](newCapacity)
+    val newCompactionCounts = Array.fill[Int](newNumLevels)(0)
     val shift = newCapacity - capacity
     var i = 0
-    while (i <= maxNumLevels) {
+    while (i < maxNumLevels) {
       newLevels(i) = levels(i) + shift
+      newCompactionCounts(i) = compactionCounts(i)
       i += 1
     }
     while (i <= newNumLevels) {
@@ -223,7 +227,7 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
     }
     System.arraycopy(items, levels(0), newItems, newLevels(0), size)
 
-    new ApproxCDFCombiner[T](newLevels, newItems, numLevels, minValue, maxValue, rand)
+    new ApproxCDFCombiner[T](newLevels, newItems, newCompactionCounts, numLevels, minValue, maxValue, rand)
   }
 
   def clear() {
@@ -240,9 +244,10 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
   /* Compact level `level`, merging the compacted results into level `level+1`.
    * Shift lower levels up to keep items contiguous.
    */
-  def compactLevel(level: Int, shiftLowerLevels: Boolean = true) {
+  def compactLevel(level: Int, shiftLowerLevels: Boolean = true, dummy: T = helper.dummyValue) {
     assert(level <= numLevels - 1)
     if (level == numLevels - 1) numLevels += 1
+    compactionCounts(level) += 1
 
     val bot = levels(0)
     val a0 = levels(level)
@@ -290,6 +295,7 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
 
     val mergedLevels = Array.ofDim[Int](ubOnNumLevels + 1)
     val mergedItems = Array.ofDim[T](size + other.size)
+    val mergedCompactionCounts = Array.fill[Int](ubOnNumLevels)(0)
 
     val selfPop = levelSize(0)
     val otherPop = other.levelSize(0)
@@ -297,7 +303,7 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
     System.arraycopy(other.items, other.levels(0), mergedItems, selfPop, otherPop)
 
     mergedLevels(0) = 0
-    mergedLevels(1) = selfPop + otherPop
+    mergedCompactionCounts(0) = compactionCounts(0) + other.compactionCounts(0)
 
     var lvl = 1
     while (lvl < mergedLevels.length - 1) {
@@ -318,16 +324,28 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
       lvl += 1
     }
 
+    lvl = 0
+    while (lvl < compactionCounts.length) {
+      mergedCompactionCounts(lvl) += compactionCounts(lvl)
+      lvl += 1
+    }
+    lvl = 0
+    while (lvl < other.compactionCounts.length) {
+      mergedCompactionCounts(lvl) += other.compactionCounts(lvl)
+      lvl += 1
+    }
+
     new ApproxCDFCombiner[T](
       mergedLevels,
       mergedItems,
+      mergedCompactionCounts,
       math.max(numLevels, other.numLevels),
       helper.min(minValue, other.minValue),
       helper.max(maxValue, other.maxValue),
       rand)
   }
 
-  def generalCompact(capacities: Array[Int], minCapacity: Int, levelCapacity: (Int, Int) => Int) {
+  def generalCompact(minCapacity: Int, levelCapacity: (Int, Int) => Int, dummy: T = helper.dummyValue) {
     var currentItemCount = levels(numLevels) - levels(0) // decreases with each compaction
     var targetItemCount = { // increases if we add levels
       var lvl = 0
@@ -388,12 +406,13 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
 
     val offset = freeSpaceAtBottom - other.levels(0)
     var lvl = 0
-    while (lvl <= other.numLevels) {
+    while (lvl < other.numLevels) {
       levels(lvl) = other.levels(lvl) + offset
+      compactionCounts(lvl) = other.compactionCounts(lvl)
       lvl += 1
     }
     while (lvl < levels.length) {
-      levels(lvl) = levels(lvl - 1)
+      levels(lvl) = items.length
       lvl += 1
     }
 
@@ -640,7 +659,7 @@ class RegionValueApproxCDFAggregator[@specialized(Int, Long, Float, Double) T: C
     val ub = QuantilesAggregator.ubOnNumLevels(finalN)
 
     val mergedCombiner = combiner.merge(other.combiner, ub)
-    mergedCombiner.generalCompact(capacities, m, levelCapacity _)
+    mergedCombiner.generalCompact(m, levelCapacity)
 
     val finalNumLevels = mergedCombiner.numLevels
     if (finalNumLevels > levelsCapacity)
@@ -714,5 +733,204 @@ object QuantilesAggregator {
       h += 1
     }
     total
+  }
+}
+
+object Main {
+  def time(block: => Unit) = {
+    val t0 = System.nanoTime()
+    block
+    val t1 = System.nanoTime()
+    t1 - t0
+  }
+
+  def computeErrors(values: Array[Int], ranks: Array[Long], epsilon: Double): (Double, Double) = {
+    val n = ranks(values.length)
+    var i = 0
+    var q = epsilon
+    var totalError: Long = 0
+    var maxError: Long = 0
+    var numErrors = 0
+    while (q < 1) {
+      val rank = {
+        val r = (q * n).floor.toLong
+        if (r == n) r - 1 else r
+      }
+      while (ranks(i) <= rank) i += 1
+      val error = scala.math.abs(values(i-1) - rank)
+      totalError += error
+      if (error > maxError) maxError = error
+      numErrors += 1
+
+      q += epsilon
+    }
+    (totalError.toDouble / numErrors / n, maxError.toDouble / n)
+  }
+
+  def main(args: Array[String]) = {
+    import scala.math.{abs, pow}
+    import scala.util.{Random, Sorting}
+
+    val k = 1000
+    val n = 1500000
+    val preReps = 0
+    val reps = 1
+
+    //    val kllEager = new RegionValueApproxCDFLongAggregator2(100, 32, false)
+    val kllAgg = new RegionValueApproxCDFIntAggregator(k)
+    val kllAgg2 = new RegionValueApproxCDFIntAggregator(k)
+    //    val kllAgg2 = new RegionValueApproxCDFAggregator[Int](k, 8, 1, true)
+
+    val rand = new Random()
+    val data = rand.shuffle(IndexedSeq.range(0, n)).toArray
+    //    val data = Array.range(0, n)
+    val results: ArrayBuilder[(Array[Int], Array[Long])] = new ArrayBuilder(reps)
+
+    time {
+      var rep = 0
+      while (rep < preReps) {
+        kllAgg.clear()
+        kllAgg2.clear()
+        var i = 0
+        while (i < n/2) { kllAgg2._seqOp(data(i)); i += 1 }
+        while (i < n) {
+          kllAgg._seqOp(data(i));
+          i += 1
+        }
+        kllAgg._combOp(kllAgg2)
+        rep += 1
+      }
+    }
+    val kllTime = time {
+      var rep = 0
+      while (rep < reps) {
+        kllAgg.clear()
+        kllAgg2.clear()
+        var i = 0
+        while (i < n/2) { kllAgg2._seqOp(data(i)); i += 1 }
+        while (i < n) { kllAgg._seqOp(data(i)); i += 1 }
+        kllAgg._combOp(kllAgg2)
+        results += kllAgg.combiner.cdf
+        rep += 1
+      }
+    }
+    val kllResults = results.result()
+    results.clear()
+
+    //    time {
+    //      var i = 0
+    //      //      while (i < n/2) { agg2.seqOp(data(i)); i += 1 }
+    //      while (i < n) { kllEager._seqOp(data(i)); i += 1 }
+    //      //      agg.combOp(agg2.asInstanceOf[agg.type])
+    //    }
+    //    val kllEagerTime = time {
+    //      var rep = 0
+    //      while (rep < reps) {
+    //        kllEager.clear()
+    //        var i = 0
+    //        //      while (i < n/2) { agg2.seqOp(data(i)); i += 1 }
+    //        while (i < n) {
+    //          kllEager._seqOp(data(i)); i += 1
+    //        }
+    //        //      agg.combOp(agg2.asInstanceOf[agg.type])
+    //        results += kllEager.cdf
+    //        rep += 1
+    //      }
+    //    }
+    //    val kllEagResults = results.result()
+    //    results.clear()
+
+    //    val scalaStableSortTime = time {
+    //      var rep = 0
+    //      while (rep < reps) { data.sorted; rep += 1 }
+    //    }
+    //    val scalaSortTime = time {
+    //      var rep = 0
+    //      while (rep < reps) {
+    //        val data2 = Array.ofDim[Long](n)
+    //        var i = 0
+    //        while (i < n) {
+    //          data2(i) = data(i)
+    //          i += 1
+    //        }
+    //        Sorting.quickSort(data2)
+    //        rep += 1
+    //      }
+    //    }
+
+    val javaSortTime = time {
+      var rep = 0
+      while (rep < reps) {
+        val data2 = Array.ofDim[Int](n)
+        var i = 0
+        while (i < n) {
+          data2(i) = data(i)
+          i += 1
+        }
+        java.util.Arrays.sort(data2)
+        //        QuickSort.sort(data2)
+        rep += 1
+      }
+    }
+
+//    val quickselectTime = time {
+//      var rep = 0
+//      val mid = n / 2
+//      while (rep < reps) {
+//        val data2 = Array.ofDim[Int](n)
+//        var i = 0
+//        while (i < n) {
+//          data2(i) = data(i)
+//          i += 1
+//        }
+//        quickSelect(data2, mid)
+//        //        QuickSort.sort(data2)
+//        rep += 1
+//      }
+//    }
+
+    val factor = pow(10, 9)
+    println(s"KLL took ${ kllTime.toDouble / factor / reps } s")
+    //    println(s"Eager KLL took ${ kllEagerTime.toDouble / factor / reps } s")
+    println(s"java sort took ${ javaSortTime.toDouble / factor / reps } s")
+//    println(s"quickselect took ${ quickselectTime.toDouble / factor / reps } s")
+    //    println(s"scala quicksort took ${ scalaSortTime.toDouble / factor / reps } s")
+    //    println(s"stable sort took ${ scalaStableSortTime.toDouble / factor / reps } s")
+
+    println()
+
+    val (kllAvgErrors, kllMaxErrors) = kllResults.map { case (values, ranks) => computeErrors(values, ranks, 0.01) }.unzip
+    println(s"KLL average error = ${ kllAvgErrors.sum / reps }")
+    println(s"KLL max error = ${ kllMaxErrors.sum / reps }")
+    println(s"KLL memory used = ${ kllAgg.capacity }")
+
+    val compactionCounts = kllAgg.combiner.compactionCounts
+    println(compactionCounts.mkString("[", ", ", "]"))
+    val errs = Array.ofDim[Double](compactionCounts.length + 1)
+    errs(compactionCounts.length) = 0
+    var i = compactionCounts.length
+    var totalMaxErr: Long = 0
+    while (i > 0) {
+      i -= 1
+      totalMaxErr += compactionCounts(i) << i
+      errs(i) = totalMaxErr
+    }
+    var totalSquaredErr: Long = 0
+    i = 0
+    val delta = .000000025
+    val factor2 = math.log(2 / delta)
+    while (i < compactionCounts.length) {
+      totalSquaredErr += compactionCounts(i) << (2 * i)
+      i += 1
+      errs(i) += math.sqrt(totalSquaredErr * factor2)
+    }
+    println(errs.map(_ / n).min)
+
+    //    println()
+    //
+    //    val (kllEagAvgErrors, kllEagMaxErrors) = kllEagResults.map { case (values, ranks) => computeErrors(values, ranks, 0.01) }.unzip
+    //    println(s"Eager KLL average error = ${ kllEagAvgErrors.sum / reps }")
+    //    println(s"Eager KLL max error = ${ kllEagMaxErrors.sum / reps }")
+    //    println(s"Eager KLL memory used = ${ kllEager.memUsage }")
   }
 }

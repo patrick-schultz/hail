@@ -785,8 +785,8 @@ object Main {
     import scala.math.{abs, pow}
     import scala.util.{Random, Sorting}
 
-    val k = 1000
-    val n = 1500000
+    val k = 100
+    val n = 15000000
     val preReps = 0
     val reps = 1
 
@@ -918,27 +918,25 @@ object Main {
     println(s"KLL max error = ${ kllMaxErrors.sum / reps }")
     println(s"KLL memory used = ${ kllAgg.capacity }")
 
-    val compactionCounts = kllAgg.combiner.compactionCounts
+    val numLevels = kllAgg.numLevels
+    val compactionCounts = kllAgg.combiner.compactionCounts.take(numLevels - 1)
     println(compactionCounts.mkString("[", ", ", "]"))
-    val errs = Array.ofDim[Double](compactionCounts.length + 1)
-    errs(compactionCounts.length) = 0
-    var i = compactionCounts.length
-    var totalMaxErr: Long = 0
-    while (i > 0) {
-      i -= 1
-      totalMaxErr += compactionCounts(i) << i
-      errs(i) = totalMaxErr
+
+    val delta = .01
+    def estErr(delta: Double, counts: Array[Int]): Double = {
+      val logD = -math.log(delta)
+      val variance = counts.indices.map(i => counts(i).toLong << (i - 1)).sum
+      val errs = counts.indices.map { kk =>
+        val c = variance + Range(kk + 1, counts.length).map(i => counts(i) * ((1L << (2*i)) - (1L << (kk+i)) + (1L << (2*kk)))).sum
+        val b = (1L << kk) / 3.0
+        logD * (b + math.sqrt(b * b + 2 * c / logD)) / n.toDouble
+      }
+      2 * errs.min
     }
-    var totalSquaredErr: Long = 0
-    i = 0
-    val delta = .000000025
-    val factor2 = math.log(2 / delta)
-    while (i < compactionCounts.length) {
-      totalSquaredErr += compactionCounts(i) << (2 * i)
-      i += 1
-      errs(i) += math.sqrt(totalSquaredErr * factor2)
-    }
-    println(errs.map(_ / n).min)
+    val e = estErr(delta, compactionCounts)
+    println(s"estimated error = ${ e }")
+    println(s"estimated error = ${ estErr(delta, compactionCounts.init) + compactionCounts.last * (1 << (numLevels - 2)) / n.toDouble  }")
+    println(s"estimated error = ${ compactionCounts.last * (1 << (numLevels - 2)) / n.toDouble }")
 
     //    println()
     //

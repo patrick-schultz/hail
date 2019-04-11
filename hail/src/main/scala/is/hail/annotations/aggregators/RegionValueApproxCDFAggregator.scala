@@ -327,6 +327,7 @@ class ApproxCDFCombiner[@specialized(Int, Long, Float, Double) T: ClassTag : Ord
     System.arraycopy(other.items, other.levels(0), mergedItems, selfPop, otherPop)
 
     mergedLevels(0) = 0
+    mergedLevels(1) = selfPop + otherPop
     mergedCompactionCounts(0) = compactionCounts(0) + other.compactionCounts(0)
 
     var lvl = 1
@@ -587,7 +588,7 @@ class RegionValueApproxCDFAggregator[@specialized(Int, Long, Float, Double) T: C
     }
   }
 
-  private[aggregators] def cdf: (IndexedSeq[T], IndexedSeq[Long]) = {
+  private[aggregators] def makeCdf(): (IndexedSeq[T], IndexedSeq[Long]) = {
     val (values, ranks) = combiner.cdf
 
     assert(ranks.last == n)
@@ -595,8 +596,11 @@ class RegionValueApproxCDFAggregator[@specialized(Int, Long, Float, Double) T: C
     (values, ranks)
   }
 
-  def result(rvb: RegionValueBuilder): Unit =
-    rvb.addAnnotation(QuantilesAggregator.resultType(helper.hailType), Row.fromTuple(cdf))
+  def result(rvb: RegionValueBuilder): Unit = {
+    val cdf = makeCdf()
+    val res = Row(cdf._1, cdf._2, combiner.compactionCounts.toIndexedSeq)
+    rvb.addAnnotation(QuantilesAggregator.resultType(helper.hailType), res)
+  }
 
   def clear() {
     n = 0
@@ -689,7 +693,7 @@ class RegionValueApproxCDFAggregator[@specialized(Int, Long, Float, Double) T: C
 
 object QuantilesAggregator {
   def resultType(eltType: Type): Type =
-    TStruct("values" -> TArray(eltType), "ranks" -> TArray(TInt64()))
+    TStruct("values" -> TArray(eltType), "ranks" -> TArray(TInt64()), "_compaction_counts" -> TArray(TInt32()))
 
   def floorOfLog2OfFraction(numer: Long, denom: Long): Int = {
     var count = 0

@@ -926,7 +926,7 @@ object Main {
     val compactionCounts = kllAgg.combiner.compactionCounts.take(numLevels - 1)
     println(compactionCounts.mkString("[", ", ", "]"))
 
-    val delta = .01
+    val delta = .00005
     def estErr(delta: Double, counts: Array[Int]): Double = {
       val logD = -math.log(delta)
       val variance = counts.indices.map(i => counts(i).toLong << (i - 1)).sum
@@ -937,9 +937,17 @@ object Main {
       }
       2 * errs.min
     }
+    def estErrHoeff(delta: Double, counts: Array[Int]): Double = {
+      val logD = -math.log(delta)
+      val s = counts.indices.map { i => counts(i) * math.pow(2.0, 2*i - 1) }.sum
+      math.sqrt(logD * s / 2.0) / n.toDouble
+    }
     val e = estErr(delta, compactionCounts)
+    val eh = estErrHoeff(delta, compactionCounts)
     println(s"estimated error = ${ e }")
     println(s"estimated error = ${ estErr(delta, compactionCounts.init) + compactionCounts.last * (1 << (numLevels - 2)) / n.toDouble  }")
+    println(s"estimated error = ${ eh }")
+    println(s"estimated error = ${ estErrHoeff(delta, compactionCounts.init) + compactionCounts.last * (1 << (numLevels - 2)) / n.toDouble  }")
     println(s"estimated error = ${ compactionCounts.last * (1 << (numLevels - 2)) / n.toDouble }")
 
     //    println()

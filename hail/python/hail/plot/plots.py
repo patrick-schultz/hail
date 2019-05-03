@@ -161,7 +161,10 @@ def pdf(data, k=350, smoothing=.5, legend=None, title=None, log=False, interacti
         tools='xpan,xwheel_zoom,reset,save',
         active_scroll='xwheel_zoom',
         background_fill_color='#EEEEEE')
+    return _smoothed_pdf(data, smoothing, legend, interactive, p)
 
+
+def _smoothed_pdf(data, smoothing, legend, interactive, p):
     n = data.ranks[-1]
     weights = np.diff(data.ranks[1:-1])
     min = data.values[0]
@@ -194,6 +197,85 @@ def pdf(data, k=350, smoothing=.5, legend=None, title=None, log=False, interacti
         return p, mk_interact
     else:
         return p
+
+
+def compare(x1, y1, x2, y2):
+    return x1*y2 - x2*y1
+
+
+def max_entropy_cdf(min_x, max_x, x, y, e):
+    new_y = np.full_like(x, 0)
+    keep = np.full_like(x, False, dtype=np.bool_)
+
+    e = e
+    fx = min_x
+    fy = 0
+    li = 0
+    ui = 0
+    ldx = x[0] - min_x
+    udx = ldx
+    ldy = y[1] - e
+    udy = y[0] + e
+    j = 1
+    # loop vars: li, ui, j, fx, fy, ldx, udx, ldy, udy
+    while ui < len(x) and li < len(x):
+        if j == len(x):
+            ub = 1
+            lb = 1
+            xj = max_x
+        else:
+            ub = y[j] + e
+            lb = y[j+1] - e
+            xj = x[j]
+        dx = xj - fx
+        judy = ub - fy
+        jldy = lb - fy
+        if compare(ldx, ldy, dx, judy) < 0:
+            fx = x[li]
+            fy = y[li+1] - e
+            new_y[li] = fy
+            keep[li] = True
+            j = li + 1
+            if j >= len(x):
+                break
+            li = j
+            ldx = x[j] - fx
+            ldy = y[j+1] - e - fy
+            ui = j
+            udx = x[j] - fx
+            udy = y[j] + e - fy
+            j += 1
+            continue
+        elif compare(udx, udy, dx, jldy) > 0:
+            fx = x[ui]
+            fy = y[ui] + e
+            new_y[ui] = fy
+            keep[ui] = True
+            j = ui + 1
+            if j >= len(x):
+                break
+            li = j
+            ldx = x[j] - fx
+            ldy = y[j+1] - e - fy
+            ui = j
+            udx = x[j] - fx
+            udy = y[j] + e - fy
+            j += 1
+            continue
+        if j >= len(x):
+            break
+        if compare(udx, udy, dx, judy) < 0:
+            ui = j
+            udx = x[j] - fx
+            udy = y[j] + e - fy
+        if compare(ldx, ldy, dx, jldy) > 0:
+            li = j
+            ldx = x[j] - fx
+            ldy = y[j+1] - e - fy
+        j += 1
+    return new_y, keep
+
+def _max_entropy_pdf(plot, ):
 
 
 @typecheck(data=oneof(Struct, expr_float64), range=nullable(sized_tupleof(numeric, numeric)),

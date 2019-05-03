@@ -1,5 +1,6 @@
 import builtins
 import functools
+from math import sqrt
 from typing import *
 
 import hail as hl
@@ -46,6 +47,17 @@ def _quantile_from_cdf(cdf, q):
             .when(1.0, cdf.values.length() - 1)
             .default(_lower_bound(cdf.ranks, pos) - 1))
     return cdf.values[idx]
+
+
+@typecheck(cdf=expr_struct(), confidence=expr_oneof(expr_float32, expr_float64))
+def _error_from_cdf(cdf, confidence):
+    """Estimates error of approx_cdf aggregator, using Hoeffding's inequality.
+
+    Error of any one quantile estimation is less than returned bound with
+    probability 1-'confidence'.
+    """
+    s = range(0, len(cdf._compaction_counts)).map(lambda i: cdf._compaction_counts[i] << (2*i)).sum
+    return sqrt(-log(confidence / 2) * s / 2) / cdf.ranks[-1]
 
 
 @typecheck(t=hail_type)

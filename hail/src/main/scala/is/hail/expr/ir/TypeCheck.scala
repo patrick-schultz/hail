@@ -253,6 +253,8 @@ object TypeCheck {
       case x@ArrayAggScan(a, name, query) =>
         assert(a.typ.isInstanceOf[TStreamable])
         assert(env.scan.isEmpty)
+      case RunAgg(init, agg) =>
+        assert(init.typ == agg.stateType)
       case x@AggFilter(cond, aggIR, _) =>
         assert(cond.typ isOfType TBoolean())
         assert(x.typ == aggIR.typ)
@@ -335,6 +337,8 @@ object TypeCheck {
       case MatrixMultiWrite(_, _) => // do nothing
       case x@TableAggregate(child, query) =>
         assert(x.typ == query.typ)
+      case x@TableAggregateNewAgg(_, initArgs, query) =>
+        assert(initArgs.typ == query.stateType)
       case x@MatrixAggregate(child, query) =>
         assert(x.typ == query.typ)
       case RelationalLet(_, _, _) =>

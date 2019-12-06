@@ -912,7 +912,7 @@ case class TableMultiWayZipJoin(children: IndexedSeq[TableIR], fieldName: String
         rvb.startStruct()
         rvb.addFields(rowType, rv, keyIdx) // Add the key
         rvb.startMissingArray(localDataLength) // add the values
-      var i = 0
+        var i = 0
         while (i < rvs.length) {
           val (rv, j) = rvs(i)
           rvb.setArrayIndex(j)
@@ -975,6 +975,23 @@ case class TableLeftJoinRightDistinct(left: TableIR, right: TableIR, root: Strin
       rvd = leftValue.rvd
         .orderedLeftJoinDistinctAndInsert(rightValue.rvd.truncateKey(joinKey), root))
   }
+}
+
+case class TableMapRowsNewAgg(child: TableIR, aggInit: AggInitArgs, newRow: AggIR) extends TableIR {
+  require(aggInit.typ == newRow.stateType)
+
+  val children: IndexedSeq[BaseIR] = FastIndexedSeq(child, aggInit, newRow)
+
+  lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
+
+  val typ: TableType = child.typ.copy(rowType = newRow.typ.asInstanceOf[TStruct])
+
+  def copy(newChildren: IndexedSeq[BaseIR]): TableMapRowsNewAgg = newChildren match {
+    case Seq(child: TableIR, aggInit: AggInitArgs, newRow: AggIR) =>
+      TableMapRowsNewAgg(child, aggInit, newRow)
+  }
+
+  override def partitionCounts: Option[IndexedSeq[Long]] = child.partitionCounts
 }
 
 // Must leave key fields unchanged.
@@ -1332,6 +1349,39 @@ case class TableDistinct(child: TableIR) extends TableIR {
   }
 }
 
+case class TableKeyByAndAggregateNewAgg(
+  child: TableIR,
+  initArgs: AggInitArgs,
+  expr: AggIR,
+  newKey: IR,
+  nPartitions: Option[Int] = None,
+  bufferSize: Int = 50
+) extends TableIR {
+  require(initArgs.typ == expr.stateType)
+  require(expr.resType.isInstanceOf[TStruct])
+  require(newKey.typ.isInstanceOf[TStruct])
+  require(bufferSize > 0)
+
+  lazy val children: IndexedSeq[BaseIR] = Array(child, expr, newKey)
+
+  lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
+
+  def copy(newChildren: IndexedSeq[BaseIR]): TableKeyByAndAggregate = {
+    val IndexedSeq(newChild: TableIR, newExpr: IR, newNewKey: IR) = newChildren
+    TableKeyByAndAggregate(newChild, newExpr, newNewKey, nPartitions, bufferSize)
+  }
+
+  private val keyType = newKey.typ.asInstanceOf[TStruct]
+  val typ: TableType =
+    TableType(
+      rowType = keyType ++ coerce[TStruct](expr.resType),
+      globalType = child.typ.globalType,
+      key = keyType.fieldNames
+    )
+
+  val rvdType: RVDType = typ.canonicalRVDType
+}
+
 case class TableKeyByAndAggregate(
   child: TableIR,
   expr: IR,
@@ -1592,6 +1642,22 @@ case class TableKeyByAndAggregate(
       typ = typ,
       rvd = RVD.coerce(RVDType(newRowType, keyType.fieldNames), crdd, ctx))
   }
+}
+
+case class TableAggregateByKeyNewAgg(child: TableIR, initArgs: AggInitArgs, expr: AggIR) extends TableIR {
+  require(initArgs.typ == expr.stateType)
+  require(child.typ.key.nonEmpty)
+
+  lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
+
+  lazy val children: IndexedSeq[BaseIR] = FastIndexedSeq(child, initArgs, expr)
+
+  def copy(newChildren: IndexedSeq[BaseIR]): TableAggregateByKeyNewAgg = newChildren match {
+    case Seq(child: TableIR, initArgs: AggInitArgs, expr: AggIR) =>
+      TableAggregateByKeyNewAgg(child, initArgs, expr)
+  }
+
+  val typ: TableType = child.typ.copy(rowType = child.typ.keyType ++ coerce[TStruct](expr.resType))
 }
 
 // follows key_by non-empty key

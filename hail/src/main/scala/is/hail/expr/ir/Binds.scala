@@ -34,13 +34,18 @@ object Bindings {
     case NDArrayMap2(l, r, lName, rName, _) => if (i == 2) Array(lName -> -coerce[TNDArray](l.typ).elementType, rName -> -coerce[TNDArray](r.typ).elementType) else empty
     case CollectDistributedArray(contexts, globals, cname, gname, _) => if (i == 2) Array(cname -> -coerce[TArray](contexts.typ).elementType, gname -> globals.typ) else empty
     case Uniroot(argname, _, _, _) => if (i == 0) Array(argname -> TFloat64()) else empty
+
     case TableAggregate(child, _) => if (i == 1) child.typ.globalEnv.m else empty
+    case TableAggregateNewAgg(child, _, _) => if (i == 2) child.typ.rowEnv.m else empty
     case MatrixAggregate(child, _) => if (i == 1) child.typ.globalEnv.m else empty
     case TableFilter(child, _) => if (i == 1) child.typ.rowEnv.m else empty
     case TableMapGlobals(child, _) => if (i == 1) child.typ.globalEnv.m else empty
     case TableMapRows(child, _) => if (i == 1) child.typ.rowEnv.m else empty
     case TableAggregateByKey(child, _) => if (i == 1) child.typ.globalEnv.m else empty
+    case TableAggregateByKeyNewAgg(child, _, _) => if (i == 2) child.typ.rowEnv.m else empty
     case TableKeyByAndAggregate(child, _, _, _, _) => if (i == 1) child.typ.globalEnv.m else if (i == 2) child.typ.rowEnv.m else empty
+    case TableKeyByAndAggregateNewAgg(child, _, _, _, _, _) => if (i == 2 || i == 3) child.typ.rowEnv.m else empty
+
     case MatrixMapRows(child, _) => if (i == 1) child.typ.rowEnv.m else empty
     case MatrixFilterRows(child, _) => if (i == 1) child.typ.rowEnv.m else empty
     case MatrixMapCols(child, _, _) => if (i == 1) child.typ.colEnv.m else empty
@@ -50,8 +55,28 @@ object Bindings {
     case MatrixMapGlobals(child, _) => if (i == 1) child.typ.globalEnv.m else empty
     case MatrixAggregateColsByKey(child, _, _) => if (i == 1) child.typ.rowEnv.m else if (i == 2) child.typ.globalEnv.m else empty
     case MatrixAggregateRowsByKey(child, _, _) => if (i == 1) child.typ.colEnv.m else if (i == 2) child.typ.globalEnv.m else empty
+
     case BlockMatrixMap(_, eltName, _) => if (i == 1) Array(eltName -> TFloat64()) else empty
     case BlockMatrixMap2(_, _, lName, rName, _) => if (i == 2) Array(lName -> TFloat64(), rName -> TFloat64()) else empty
+
+    case AggLet2(name, value, _) => if (i == 1) Array(name -> value.typ) else empty
+    case x@AggDo(aggs, _, _) =>
+      if (i == x.children.length - 1)
+        aggs.flatMap { case (name, agg) => name.map(_ -> agg.resType) }
+      else empty
+    case AggArrayDo(array, eltName, _, _) =>
+      if (i == 1) Array(eltName -> -coerce[TArray](array.typ).elementType)
+      else empty
+    case x@AggDoPar(aggs, _) =>
+      if (i == x.children.length - 1)
+        aggs.flatMap { case (name, agg) => name.map(_ -> agg.resType) }
+      else empty
+    case AggArrayDoPar(array, eltName, indexName, _, _) =>
+      if (i == 1)
+        Array(eltName -> -coerce[TArray](array.typ).elementType,
+              indexName -> TInt32())
+      else empty
+
     case _ => empty
   }
 }

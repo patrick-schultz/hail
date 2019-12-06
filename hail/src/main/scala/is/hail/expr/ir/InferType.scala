@@ -111,6 +111,8 @@ object InferType {
         query.typ
       case ArrayAggScan(_, _, query) =>
         TArray(query.typ)
+      case RunAgg(_, agg) =>
+        agg.resType
       case ArrayLeftJoinDistinct(left, right, l, r, compare, join) =>
         coerce[TStreamable](left.typ).copyStreamable(join.typ)
         TArray(join.typ)
@@ -182,6 +184,8 @@ object InferType {
       case TableCount(_) => TInt64()
       case TableAggregate(child, query) =>
         query.typ
+      case TableAggregateNewAgg(_, _, query) =>
+        query.resType
       case MatrixAggregate(child, query) =>
         query.typ
       case _: TableWrite => TVoid

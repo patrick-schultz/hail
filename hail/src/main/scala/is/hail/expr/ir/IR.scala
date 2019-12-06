@@ -256,6 +256,7 @@ final case class ArrayFor(a: IR, valueName: String, body: IR) extends IR
 
 final case class ArrayAgg(a: IR, name: String, query: IR) extends IR
 final case class ArrayAggScan(a: IR, name: String, query: IR) extends IR
+final case class RunAgg(init: AggInitArgs, agg: AggIR) extends IR
 
 final case class ArrayLeftJoinDistinct(left: IR, right: IR, l: String, r: String, keyF: IR, joinF: IR) extends IR
 
@@ -316,6 +317,7 @@ final case class ApplyScanOp(constructorArgs: IndexedSeq[IR], initOpArgs: Option
 
   def op: AggOp = aggSig.op
 }
+
 
 final case class InitOp(i: IR, args: IndexedSeq[IR], aggSig: AggSignature) extends IR
 final case class SeqOp(i: IR, args: IndexedSeq[IR], aggSig: AggSignature) extends IR
@@ -406,6 +408,7 @@ final case class Uniroot(argname: String, function: IR, min: IR, max: IR) extend
 
 final case class TableCount(child: TableIR) extends IR
 final case class TableAggregate(child: TableIR, query: IR) extends IR
+final case class TableAggregateNewAgg(child: TableIR, initArgs: AggInitArgs, query: AggIR) extends IR
 final case class MatrixAggregate(child: MatrixIR, query: IR) extends IR
 
 final case class TableWrite(child: TableIR, writer: TableWriter) extends IR

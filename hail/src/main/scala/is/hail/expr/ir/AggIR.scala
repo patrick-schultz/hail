@@ -276,18 +276,6 @@ case class AggPrimResult(op: PrimAgg) extends AggIR {
   }
 }
 
-case class AggGroupedWriteKeyReadAll(key: IR, body: AggIR, drop: Boolean = false) extends AggIR {
-  val typ = AggType(
-    resType = if (drop) TTuple() else TDict(key.typ, body.resType),
-    stateType = GroupedAggState(key.typ, body.stateType))
-
-  val children = FastIndexedSeq(key, body)
-
-  def copy(newChildren: IndexedSeq[BaseIR]): AggGroupedWriteKeyReadAll = newChildren match {
-    case Seq(key: IR, body: AggIR) => AggGroupedWriteKeyReadAll(key, body, drop)
-  }
-}
-
 case class AggGroupedAtKey(key: IR, body: AggIR) extends AggIR {
   val typ = body.typ.copy(stateType = GroupedAggState(key.typ, body.stateType))
 
@@ -298,7 +286,7 @@ case class AggGroupedAtKey(key: IR, body: AggIR) extends AggIR {
   }
 }
 
-case class AggGroupedMap(body: AggIR, drop: Boolean = false, keyType: Type) extends AggIR {
+case class AggGroupedMap(body: AggIR, keyType: Type, drop: Boolean = false) extends AggIR {
   val typ = AggType(
     resType = if (drop) TTuple() else TDict(keyType, body.resType),
     stateType = GroupedAggState(keyType, body.stateType))
@@ -306,7 +294,7 @@ case class AggGroupedMap(body: AggIR, drop: Boolean = false, keyType: Type) exte
   val children = FastIndexedSeq(body)
 
   def copy(newChildren: IndexedSeq[BaseIR]): AggGroupedMap = newChildren match {
-    case Seq(body: AggIR) => AggGroupedMap(body, drop, keyType)
+    case Seq(body: AggIR) => AggGroupedMap(body, keyType, drop)
   }
 }
 
@@ -338,11 +326,9 @@ object FilterAggIR {
       AggArrayDoPar(array, eltName, indexName, filter(cond, body), drop)
     case x: AggPrimSeq => AggIR.pure(x.stateType)
     case x: AggPrimResult => x
-    case AggGroupedWriteKeyReadAll(key, body, drop) =>
-      AggGroupedWriteKeyReadAll(key, filter(cond, body), drop)
     case AggGroupedAtKey(key, body) => AggGroupedAtKey(key, filter(cond, body))
-    case AggGroupedMap(body, drop, keyType) =>
-      AggGroupedMap(filter(cond, body), drop, keyType)
+    case AggGroupedMap(body, keyType, drop) =>
+      AggGroupedMap(filter(cond, body), keyType, drop)
   }
 }
 
@@ -358,10 +344,8 @@ object SkipAgg {
       case AggArrayDoPar(array, eltName, indexName, body, false) =>
         AggArrayDoPar(array, eltName, indexName, SkipAgg(body), false)
       case x: AggPrimResult => x
-      case AggGroupedWriteKeyReadAll(key, body, false) =>
-        AggGroupedWriteKeyReadAll(key, SkipAgg(body), false)
       case AggGroupedAtKey(key, body) => AggGroupedAtKey(key, SkipAgg(body))
-      case AggGroupedMap(body, false, keyType) => AggGroupedMap(SkipAgg(body), false, keyType)
+      case AggGroupedMap(body, keyType, false) => AggGroupedMap(SkipAgg(body), keyType, false)
       case _ =>
         assert(aggIR.resType == TTuple())
         AggIR.pure(aggIR.stateType)
@@ -461,8 +445,11 @@ object LowerToAggIR {
         agg
       case AggGroupBy(key, aggBody, _) =>
         val Closed(init, aggIR) = extract(aggBody).close
+        val res = AggGroupedMap(SkipAgg(aggIR), key.typ)
         val agg = Closed(GroupedAggInit(key.typ, init),
-                         AggGroupedWriteKeyReadAll(key, aggIR))
+                         AggDo(FastSeq(Some("res") -> res,
+                                       None -> AggGroupedAtKey(key, aggIR)),
+                               Ref("res", res.resType)))
         assert(agg.resType == ir.typ)
         agg
       case AggArrayPerElement(a, elementName, indexName, aggBody, knownLength, isScan) =>

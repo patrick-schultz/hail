@@ -93,6 +93,8 @@ object Children {
       Array(a, query)
     case ArrayAggScan(a, name, query) =>
       Array(a, query)
+    case RunAgg(init, agg) =>
+      Array(init, agg)
     case NDArrayRef(nd, idxs) =>
       nd +: idxs
     case NDArraySlice(nd, slices) =>
@@ -166,6 +168,8 @@ object Children {
     case TableGetGlobals(child) => Array(child)
     case TableCollect(child) => Array(child)
     case TableAggregate(child, query) => Array(child, query)
+    case TableAggregateNewAgg(child, initArgs, query) =>
+      Array(child, initArgs, query)
     case MatrixAggregate(child, query) => Array(child, query)
     case TableWrite(child, _) => Array(child)
     case TableMultiWrite(children, _) => children

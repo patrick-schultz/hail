@@ -1,6 +1,6 @@
 package is.hail.expr.ir.lowering
 
-import is.hail.expr.ir.{BaseIR, BlockMatrixIR, ExecuteContext, IR, InterpretNonCompilable, LowerMatrixIR, MatrixIR, TableIR}
+import is.hail.expr.ir.{BaseIR, BlockMatrixIR, ExecuteContext, IR, InterpretNonCompilable, LowerMatrixIR, MatrixIR, TableIR, LowerToAggIR}
 
 trait LoweringPass {
   val before: IRState
@@ -24,11 +24,15 @@ case object LowerMatrixToTablePass extends LoweringPass {
   val after: IRState = MatrixLoweredToTable
   val context: String = "LowerMatrixToTable"
 
-  def transform(ctx: ExecuteContext, ir: BaseIR): BaseIR = ir match {
-    case x: IR => LowerMatrixIR(x)
-    case x: TableIR => LowerMatrixIR(x)
-    case x: MatrixIR => LowerMatrixIR(x)
-    case x: BlockMatrixIR => LowerMatrixIR(x)
+  def transform(ctx: ExecuteContext, ir: BaseIR): BaseIR = {
+    val result = ir match {
+      case x: IR => LowerMatrixIR(x)
+      case x: TableIR => LowerMatrixIR(x)
+      case x: MatrixIR => LowerMatrixIR(x)
+      case x: BlockMatrixIR => LowerMatrixIR(x)
+    }
+    LowerToAggIRPass(ctx, result)
+    result
   }
 }
 
@@ -54,4 +58,12 @@ case object LowerTableToDistributedArrayPass extends LoweringPass {
   val context: String = "LowerTableToDistributedArray"
 
   def transform(ctx: ExecuteContext, ir: BaseIR): BaseIR = LowerTableIR.lower(ir.asInstanceOf[IR])
+}
+
+case object LowerToAggIRPass extends LoweringPass {
+  val before: IRState = MatrixLoweredToTable
+  val after: IRState = LoweredAggs
+  val context: String = "LowerToAggIR"
+
+  def transform(ctx: ExecuteContext, ir: BaseIR): BaseIR = LowerToAggIR(ir)
 }

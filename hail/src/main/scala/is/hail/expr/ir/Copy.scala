@@ -152,6 +152,9 @@ object Copy {
       case ArrayAggScan(_, name, _) =>
         assert(newChildren.length == 2)
         ArrayAggScan(newChildren(0).asInstanceOf[IR], name, newChildren(1).asInstanceOf[IR])
+      case RunAgg(_, _) =>
+        assert(newChildren.length == 2)
+        RunAgg(newChildren(0).asInstanceOf[AggInitArgs], newChildren(1).asInstanceOf[AggIR])
       case AggFilter(_, _, isScan) =>
         assert(newChildren.length == 2)
         AggFilter(newChildren(0).asInstanceOf[IR], newChildren(1).asInstanceOf[IR], isScan)
@@ -253,6 +256,11 @@ object Copy {
       case TableAggregate(_, _) =>
         assert(newChildren.length == 2)
         TableAggregate(newChildren(0).asInstanceOf[TableIR], newChildren(1).asInstanceOf[IR])
+      case TableAggregateNewAgg(_, _, _) =>
+        assert(newChildren.length == 3)
+        TableAggregateNewAgg(newChildren(0).asInstanceOf[TableIR],
+                             newChildren(1).asInstanceOf[AggInitArgs],
+                             newChildren(2).asInstanceOf[AggIR])
       case MatrixAggregate(_, _) =>
         assert(newChildren.length == 2)
         MatrixAggregate(newChildren(0).asInstanceOf[MatrixIR], newChildren(1).asInstanceOf[IR])

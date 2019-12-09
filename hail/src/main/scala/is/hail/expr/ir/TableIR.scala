@@ -984,7 +984,7 @@ case class TableMapRowsNewAgg(child: TableIR, aggInit: AggInitArgs, newRow: AggI
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
-  val typ: TableType = child.typ.copy(rowType = newRow.typ.asInstanceOf[TStruct])
+  val typ: TableType = child.typ.copy(rowType = newRow.resType.asInstanceOf[TStruct])
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableMapRowsNewAgg = newChildren match {
     case Seq(child: TableIR, aggInit: AggInitArgs, newRow: AggIR) =>
@@ -1362,13 +1362,13 @@ case class TableKeyByAndAggregateNewAgg(
   require(newKey.typ.isInstanceOf[TStruct])
   require(bufferSize > 0)
 
-  lazy val children: IndexedSeq[BaseIR] = Array(child, expr, newKey)
+  lazy val children: IndexedSeq[BaseIR] = Array(child, initArgs, expr, newKey)
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
-  def copy(newChildren: IndexedSeq[BaseIR]): TableKeyByAndAggregate = {
-    val IndexedSeq(newChild: TableIR, newExpr: IR, newNewKey: IR) = newChildren
-    TableKeyByAndAggregate(newChild, newExpr, newNewKey, nPartitions, bufferSize)
+  def copy(newChildren: IndexedSeq[BaseIR]): TableKeyByAndAggregateNewAgg = {
+    val IndexedSeq(child: TableIR, initArgs: AggInitArgs, expr: AggIR, newKey: IR) = newChildren
+    TableKeyByAndAggregateNewAgg(child, initArgs, expr, newKey, nPartitions, bufferSize)
   }
 
   private val keyType = newKey.typ.asInstanceOf[TStruct]

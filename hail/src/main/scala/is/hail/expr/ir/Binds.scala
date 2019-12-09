@@ -60,9 +60,9 @@ object Bindings {
     case BlockMatrixMap2(_, _, lName, rName, _) => if (i == 2) Array(lName -> TFloat64(), rName -> TFloat64()) else empty
 
     case AggLet2(name, value, _) => if (i == 1) Array(name -> value.typ) else empty
-    case x@AggDo(aggs, _, _) =>
+    case x: AggDo =>
       if (i == x.children.length - 1)
-        aggs.flatMap { case (name, agg) => name.map(_ -> agg.resType) }
+        x.aggs.flatMap { case (name, agg) => name.map(_ -> agg.resType) }
       else empty
     case AggArrayDo(array, eltName, _, _) =>
       if (i == 1) Array(eltName -> -coerce[TArray](array.typ).elementType)

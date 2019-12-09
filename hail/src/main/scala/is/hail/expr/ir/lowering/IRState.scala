@@ -33,3 +33,6 @@ case object CompilableIR extends IRState {
   val rules: Array[Rule] = Array(ValueIROnly, CompilableValueIRs)
 }
 
+case object LoweredAggs extends IRState {
+  val rules: Array[Rule] = Array(NoMatrixIR, NoOldAggs)
+}

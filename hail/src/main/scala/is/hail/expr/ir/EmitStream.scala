@@ -11,23 +11,51 @@ import is.hail.utils._
 import scala.language.{existentials, higherKinds}
 import scala.reflect.ClassTag
 
+abstract class COption[A] { self =>
+  def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl]
+
+  def map[B](f: A => B): COption[B] = new COption[B] {
+    def apply(none: Code[Ctrl], some: B => Code[Ctrl]): Code[Ctrl] =
+      self.apply(none, a => some(f(a)))
+  }
+
+  def flatMap[B](f: A => COption[B]): COption[B] = new COption[B] {
+    def apply(none: Code[Ctrl], some: B => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = {
+      val noneJP = jb.joinPoint()
+      noneJP.define(_ => none)
+      self.apply(noneJP(()), f(_)(noneJP(()), some, jb), jb)
+    }
+  }
+
+  def toEmitTriplet(mb: MethodBuilder)(implicit pp: ParameterPack[A]): EmitTriplet = {
+    val m = mb.newLocal[Boolean]
+    val v = pp.newLocals(mb)
+    val setup = JoinPoint.CallCC[Unit] { (jb, ret) =>
+      apply(Code(m := true, v.init, ret(())), a => Code(m := false, v := a, ret(())), jb)
+    }
+    EmitTriplet(setup, m, v.load)
+  }
+}
+class CNone[A] extends COption[A] {
+  def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = none
+}
+class CSome[A](a: A) extends COption[A] {
+  def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = some(a)
+}
+object COption {
+  def apply[A](missing: Code[Boolean], value: A): COption[A] = new COption[A] {
+    def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = missing.mux(none, some(value))
+  }
+  def fromEmitTriplet[A](et: TypedTriplet[A]): COption[A] = new COption[A] {
+    def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = {
+      et.m.mux(none, some(et.v))
+    }
+  }
+}
+
 object CodeStream { self =>
   type Eff = Code[Unit]
   type Bot = Code[Ctrl]
-  abstract class COption[A] {
-    def apply(none: Bot, some: A => Bot): Bot
-  }
-  class CNone[A] extends COption[A] {
-    def apply(none: Bot, some: A => Bot): Bot = none
-  }
-  class CSome[A](a: A) extends COption[A] {
-    def apply(none: Bot, some: A => Bot): Bot = some(a)
-  }
-  object COption {
-    def apply[A](missing: Code[Boolean], value: A): COption[A] = new COption[A] {
-      def apply(none: Bot, some: A => Bot): Bot = missing.mux(none, some(value))
-    }
-  }
 
   case class EmitStreamContext(mb: MethodBuilder, jb: JoinPointBuilder)
   def newLocal[T: ParameterPack](implicit ctx: EmitStreamContext): ParameterStore[T] = implicitly[ParameterPack[T]].newLocals(ctx.mb)

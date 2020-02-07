@@ -4,6 +4,7 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 
 import is.hail.HailContext
 import is.hail.annotations._
+import is.hail.asm4s.joinpoint.{JoinPoint, ParameterPack, TypedTriplet}
 import is.hail.asm4s.{Code, _}
 import is.hail.expr.ir.functions.{MathFunctions, StringFunctions}
 import is.hail.expr.types.physical._
@@ -721,51 +722,83 @@ private class Emit(
       case _: ArrayMap | _: ArrayZip | _: ArrayFilter | _: ArrayRange | _: ArrayFlatMap | _: ArrayScan | _: ArrayLeftJoinDistinct | _: RunAggScan | _: ArrayAggScan | _: ReadPartition =>
         emitArrayIterator(ir).toEmitTriplet(mb, PArray(coerce[PStreamable](ir.pType).elementType))
 
-      case ArrayFold(a, zero, name1, name2, body) =>
-        val typ = ir.typ
-        val tarray = coerce[TStreamable](a.typ)
-        val tti = typeToTypeInfo(typ)
-        val eti = typeToTypeInfo(tarray.elementType)
-        val xmv = mb.newField[Boolean](name2 + "_missing")
-        val xvv = coerce[Any](mb.newField(name2)(eti))
-        val xmbody = mb.newField[Boolean](name1 + "_missing_tmp")
-        val xmaccum = mb.newField[Boolean](name1 + "_missing")
-        val xvaccum = coerce[Any](mb.newField(name1)(tti))
-        val bodyenv = env.bind(
-          (name1, (tti, xmaccum.load(), xvaccum.load())),
-          (name2, (eti, xmv.load(), xvv.load())))
+      case ArrayFold(a, zero, accumName, valueName, body) =>
+        try {
+          val eltType = a.pType.asInstanceOf[PStreamable].elementType
+          val accType = ir.pType
+          implicit val eltPack = TypedTriplet.pack(eltType)
+          implicit val accPack = TypedTriplet.pack(accType)
+          val tti = typeToTypeInfo(accType)
+          val eti = typeToTypeInfo(eltType)
 
-        val codeZ = emit(zero)
-        val codeB = emit(body, env = bodyenv)
+          val streamOpt = emitStream2(a)
+          for {
+            stream <- streamOpt
+          } yield {
+            JoinPoint.CallCC[TypedTriplet[accType.type]] { (jb, ret) =>
+              implicit val ctx = CodeStream.EmitStreamContext(mb, jb)
+              def foldBody(a: TypedTriplet[eltType.type], s: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
+                val xa = eltPack.newLocals(mb)
+                val xs = accPack.newLocals(mb)
+                val bodyenv = env.bind(
+                  (accumName, (tti, xs.load.m, xs.load.v)),
+                  (valueName, (eti, xa.load.m, xa.load.v)))
 
-        val aBase = emitArrayIterator(a)
+                val codeB = emit(body, env = bodyenv)
+                TypedTriplet(accType, codeB)
+              }
+              val codeZ = emit(zero)
+              val sink = CodeStream.fold[TypedTriplet[eltType.type], TypedTriplet[accType.type]](
+                TypedTriplet(accType, codeZ), foldBody, ret)
+              CodeStream.cut(stream, sink)
+            }
+        } catch {
+          case _ =>
+            val typ = ir.typ
+            val tarray = coerce[TStreamable](a.typ)
+            val tti = typeToTypeInfo(typ)
+            val eti = typeToTypeInfo(tarray.elementType)
+            val xmv = mb.newField[Boolean](valueName + "_missing")
+            val xvv = coerce[Any](mb.newField(valueName)(eti))
+            val xmbody = mb.newField[Boolean](accumName + "_missing_tmp")
+            val xmaccum = mb.newField[Boolean](accumName + "_missing")
+            val xvaccum = coerce[Any](mb.newField(accumName)(tti))
+            val bodyenv = env.bind(
+              (accumName, (tti, xmaccum.load(), xvaccum.load())),
+              (valueName, (eti, xmv.load(), xvv.load())))
 
-        val cont = { (m: Code[Boolean], v: Code[_]) =>
-          Code(
-            xmv := m,
-            xvv := xmv.mux(defaultValue(tarray.elementType), v),
-            codeB.setup,
-            xmbody := codeB.m,
-            xvaccum := xmbody.mux(defaultValue(typ), codeB.v),
-            xmaccum := xmbody)
+            val codeZ = emit(zero)
+            val codeB = emit(body, env = bodyenv)
+
+            val aBase = emitArrayIterator(a)
+
+            val cont = { (m: Code[Boolean], v: Code[_]) =>
+              Code(
+                xmv := m,
+                xvv := xmv.mux(defaultValue(tarray.elementType), v),
+                codeB.setup,
+                xmbody := codeB.m,
+                xvaccum := xmbody.mux(defaultValue(typ), codeB.v),
+                xmaccum := xmbody)
+            }
+
+            val processAElts = aBase.arrayEmitter(cont)
+            val marray = processAElts.m.getOrElse(const(false))
+
+            EmitTriplet(Code(
+              codeZ.setup,
+              xmaccum := codeZ.m,
+              xvaccum := xmaccum.mux(defaultValue(typ), codeZ.v),
+              processAElts.setup,
+              marray.mux(
+                Code(
+                  xmaccum := true,
+                  xvaccum := defaultValue(typ)),
+                Code(
+                  aBase.calcLength,
+                  processAElts.addElements))),
+                        xmaccum, xvaccum)
         }
-
-        val processAElts = aBase.arrayEmitter(cont)
-        val marray = processAElts.m.getOrElse(const(false))
-
-        EmitTriplet(Code(
-          codeZ.setup,
-          xmaccum := codeZ.m,
-          xvaccum := xmaccum.mux(defaultValue(typ), codeZ.v),
-          processAElts.setup,
-          marray.mux(
-            Code(
-              xmaccum := true,
-              xvaccum := defaultValue(typ)),
-            Code(
-              aBase.calcLength,
-              processAElts.addElements))),
-          xmaccum, xvaccum)
 
       case ArrayFold2(a, acc, valueName, seq, res) =>
         val typ = ir.typ

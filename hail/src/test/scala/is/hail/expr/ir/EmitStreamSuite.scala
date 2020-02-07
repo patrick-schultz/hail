@@ -1,7 +1,7 @@
 package is.hail.expr.ir
 
-import is.hail.annotations.{Region, SafeRow, ScalaToRegionValue, RegionValue}
-import is.hail.asm4s.{AsmFunction1, AsmFunction3, Code, GenericTypeInfo, MaybeGenericTypeInfo, TypeInfo}
+import is.hail.annotations.{Region, RegionValue, SafeRow, ScalaToRegionValue}
+import is.hail.asm4s._
 import is.hail.asm4s.joinpoint._
 import is.hail.expr.types.physical._
 import is.hail.expr.types.virtual._
@@ -12,11 +12,128 @@ import org.apache.spark.sql.Row
 import org.testng.annotations.Test
 
 class EmitStreamSuite extends HailSuite {
+  private def compile1[T: TypeInfo, R: TypeInfo](f: (MethodBuilder, Code[T]) => Code[R]): T => R = {
+    val fb = FunctionBuilder.functionBuilder[T, R]
+    val mb = fb.apply_method
+    mb.emit(f(mb, mb.getArg[T](1)))
+    val asmFn = fb.result()()
+    asmFn.apply
+  }
 
-  private def compileStream[F >: Null : TypeInfo, A](
+  private def compile2[T: TypeInfo, U: TypeInfo, R: TypeInfo](f: (MethodBuilder, Code[T], Code[U]) => Code[R]): (T, U) => R = {
+    val fb = FunctionBuilder.functionBuilder[T, U, R]
+    val mb = fb.apply_method
+    mb.emit(f(mb, mb.getArg[T](1), mb.getArg[U](2)))
+    val asmFn = fb.result()()
+    asmFn.apply
+  }
+
+  def facStaged(n: Code[Int], ret: Code[Int] => Code[Ctrl]
+  )(implicit ctx: EmitStream2.EmitStreamContext
+  ): Code[Ctrl] = {
+    val r = EmitStream2.range(1, n)
+    val f = EmitStream2.fold[Code[Int], Code[Int]](1, (i, prod) => prod * (i + 1), ret)
+    EmitStream2.cut(r, f)
+  }
+
+  def range(n: Code[Int], name: String)(implicit ctx: EmitStream2.EmitStreamContext): EmitStream2.Src[Code[Int]] =
+    EmitStream2.map(EmitStream2.range(0, n))(
+      a => a,
+      setup0 = Code._println(const(s"$name setup0")),
+      setup = Code._println(const(s"$name setup")),
+      close0 = Code._println(const(s"$name close0")),
+      close = Code._println(const(s"$name close")))
+
+  @Test def testES2Range() {
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        val r = range(n, "range")
+        val p = EmitStream2.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
+        EmitStream2.cut(r, p)
+      }
+    }
+    f(10)
+  }
+
+  @Test def testES2Zip() {
+    val f = compile2[Int, Int, Unit] { (mb, m, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        val l = range(m, "left")
+        val r = range(n, "right")
+        val z = EmitStream2.zip(l, r)
+        val p = EmitStream2.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
+        EmitStream2.cut(z, p)
+      }
+    }
+    f(15, 10)
+  }
+
+  @Test def testES2FlatMap() {
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        val r = range(n, "outer")
+        def f(i: Code[Int]): EmitStream2.Src[Code[Int]] = range(i, "inner")
+        val m = EmitStream2.map(r)(f)
+        val fm = EmitStream2.flatMap(m)
+        val p = EmitStream2.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
+        EmitStream2.cut(fm, p)
+      }
+    }
+    f(10)
+  }
+
+  @Test def testES2ZipNested() {
+    val f = compile2[Int, Int, Unit] { (mb, m, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        val l = range(m, "left")
+
+        val r = range(n, "right outer")
+        def f(i: Code[Int]) = range(i, "right inner")
+        val fm = EmitStream2.flatMap(EmitStream2.map(r)(f))
+
+        val z = EmitStream2.zip(l, fm)
+        val p = EmitStream2.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
+        EmitStream2.cut(z, p)
+      }
+    }
+    f(11, 10)
+  }
+
+  @Test def testES2Filter() {
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        val r = range(n, "source")
+        def cond(i: Code[Int]): Code[Boolean] = (i % 2).ceq(0)
+        val f = EmitStream2.filter(r, cond)
+        val p = EmitStream2.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
+        EmitStream2.cut(f, p)
+      }
+    }
+    f(10)
+  }
+
+
+  @Test def testES2Fac() {
+    def fac(n: Int): Int = (1 to n).fold(1)(_ * _)
+    val facS = compile1[Int, Int] { (mb, n) =>
+      JoinPoint.CallCC[Code[Int]] { (jpb, ret) =>
+        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        facStaged(n, ret)
+      }
+    }
+    for (i <- 0 to 12)
+      assert(facS(i) == fac(i), s"compute: $i!")
+  }
+
+  private def compileStream[F >: Null : TypeInfo, T](
     streamIR: IR,
     inputTypes: Seq[PType]
-  )(call: (F, Region, A) => Long): A => IndexedSeq[Any] = {
+  )(call: (F, Region, T) => Long): T => IndexedSeq[Any] = {
     val argTypeInfos = new ArrayBuilder[MaybeGenericTypeInfo[_]]
     argTypeInfos += GenericTypeInfo[Region]()
     inputTypes.foreach { t =>
@@ -34,7 +151,7 @@ class EmitStreamSuite extends HailSuite {
       Code(arrayt.setup, arrayt.m.mux(0L, arrayt.v))
     }
     val f = fb.resultWithIndex()
-    (arg: A) => Region.scoped { r =>
+    (arg: T) => Region.scoped { r =>
       val off = call(f(0, r), r, arg)
       if (off == 0L)
         null

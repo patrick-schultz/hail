@@ -11,12 +11,12 @@ object ParameterPack {
     def newLocals(mb: MethodBuilder): ParameterStore[Unit] = ParameterStore.unit
   }
 
-  implicit def code[T](implicit tti: TypeInfo[T]): ParameterPack[Code[T]] =
+  implicit def code[T: TypeInfo]: ParameterPack[Code[T]] =
     new ParameterPack[Code[T]] {
       def push(v: Code[T]): Code[Unit] = coerce[Unit](v)
       def newLocals(mb: MethodBuilder): ParameterStore[Code[T]] = {
-        val x = mb.newLocal(tti)
-        ParameterStore(x.storeInsn, x.load())
+        val x = mb.newLocal[T]
+        ParameterStore(x.storeInsn, x.load(), x := defaultValue[T])
       }
     }
 
@@ -28,7 +28,7 @@ object ParameterPack {
       def newLocals(mb: MethodBuilder): ParameterStore[(A, B)] = {
         val as = ap.newLocals(mb)
         val bs = bp.newLocals(mb)
-        ParameterStore(Code(bs.store, as.store), (as.load, bs.load))
+        ParameterStore(Code(bs.store, as.store), (as.load, bs.load), Code(as.init, bs.init))
       }
     }
 
@@ -42,19 +42,21 @@ object ParameterPack {
       val as = ap.newLocals(mb)
       val bs = bp.newLocals(mb)
       val cs = cp.newLocals(mb)
-      ParameterStore(Code(cs.store, bs.store, as.store), (as.load, bs.load, cs.load))
+      ParameterStore(Code(cs.store, bs.store, as.store), (as.load, bs.load, cs.load), Code(as.init, bs.init, cs.init))
     }
   }
 
   def array(pps: IndexedSeq[ParameterPack[_]]): ParameterPack[IndexedSeq[_]] = new ParameterPack[IndexedSeq[_]] {
-    override def push(a: IndexedSeq[_]): Code[Unit] = pps.zip(a).foldLeft(Code._empty[Unit]) { case (acc, (pp, v)) => Code(acc, pp.pushAny(v)) }
+    override def push(a: IndexedSeq[_]): Code[Unit] =
+      Code.foreach(pps.zip(a)) { case (pp, v) => pp.pushAny(v) }
 
     override def newLocals(mb: MethodBuilder): ParameterStore[IndexedSeq[_]] = {
       val subStores = pps.map(_.newLocals(mb))
       val store = subStores.map(_.store).fold(Code._empty[Unit]) { case (acc, c) => Code(c, acc) } // order of c and acc is important
       ParameterStore(
         store,
-        subStores.map(_.load)
+        subStores.map(_.load),
+        Code.foreach(subStores)(_.init)
       )
     }
   }
@@ -67,7 +69,7 @@ object ParameterPack {
 }
 
 object ParameterStore {
-  def unit: ParameterStore[Unit] = ParameterStore(Code._empty, ())
+  def unit: ParameterStore[Unit] = ParameterStore(Code._empty, (), Code._empty)
 }
 
 trait ParameterPack[A] {
@@ -78,7 +80,8 @@ trait ParameterPack[A] {
 
 case class ParameterStore[A](
   store: Code[Unit],
-  load: A
+  load: A,
+  init: Code[Unit]
 ) {
   def :=(v: A)(implicit p: ParameterPack[A]): Code[Unit] =
     Code(p.push(v), store)
@@ -104,7 +107,7 @@ object TypedTriplet {
     def newLocals(mb: MethodBuilder): ParameterStore[TypedTriplet[P]] = {
       val m = mb.newLocal[Boolean]("m")
       val v = mb.newLocal("v")(ir.typeToTypeInfo(t))
-      ParameterStore(Code(m.storeInsn, v.storeInsn), TypedTriplet(Code._empty, m, v))
+      ParameterStore(Code(m.storeInsn, v.storeInsn), TypedTriplet(Code._empty, m, v), Code(m := false, v.storeAny(ir.defaultValue(t))))
     }
 
     def newFields(fb: FunctionBuilder[_], name: String): (Settable[Boolean], Settable[_]) =

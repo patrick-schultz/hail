@@ -8,8 +8,204 @@ import is.hail.expr.types.physical._
 import is.hail.io.{AbstractTypedCodecSpec, InputBuffer}
 import is.hail.utils._
 
-import scala.language.existentials
+import scala.language.{existentials, higherKinds}
 import scala.reflect.ClassTag
+
+object EmitStream2 { self =>
+  type Eff = Code[Unit]
+  type Bot = Code[Ctrl]
+  abstract class COption[A] {
+    def apply(none: Bot, some: A => Bot): Bot
+  }
+  class CNone[A] extends COption[A] {
+    def apply(none: Bot, some: A => Bot): Bot = none
+  }
+  class CSome[A](a: A) extends COption[A] {
+    def apply(none: Bot, some: A => Bot): Bot = some(a)
+  }
+  object COption {
+    def apply[A](missing: Code[Boolean], value: A): COption[A] = new COption[A] {
+      def apply(none: Bot, some: A => Bot): Bot = missing.mux(none, some(value))
+    }
+  }
+
+  case class EmitStreamContext(mb: MethodBuilder, jb: JoinPointBuilder)
+  def newLocal[T: ParameterPack](implicit ctx: EmitStreamContext): ParameterStore[T] = implicitly[ParameterPack[T]].newLocals(ctx.mb)
+  def joinPoint(implicit ctx: EmitStreamContext): DefinableJoinPoint[Unit] = ctx.jb.joinPoint()
+
+  case class Source[A](setup0: Eff, close0: Eff, close: Eff, firstPull: Bot, pull: Bot)
+  case class Sink[A](eos: Bot, push: A => Bot)
+
+  case class Src[A](f: Sink[A] => Source[A]) {
+    def apply(sink: Sink[A]): Source[A] = f(sink)
+  }
+  case class Snk[A](f: Src[A] => Bot) {
+    def apply(src: Src[A]): Bot = f(src)
+  }
+
+  def cut[A](src: Src[A], snk: Snk[A]): Bot = snk(src)
+
+  def unfold[A, S: ParameterPack](s0: S, f: S => COption[(A, S)])(implicit ctx: EmitStreamContext): Src[A] = Src[A]( sink => {
+    val s = newLocal[S]
+    val pull = joinPoint
+    pull.define(_ => f(s.load).apply(
+      none = sink.eos,
+      // this behaves unexpectedly if a depends on s in f
+      some = { case (a, s1) => Code(s := s1, sink.push(a)) }))
+    Source[A](
+      setup0 = s.init,
+      close0 = Code._empty,
+      close = Code._empty,
+      firstPull = Code(s := s0, pull(())),
+      pull = pull(()))
+  })
+
+  def range(start: Code[Int], stop: Code[Int])(implicit ctx: EmitStreamContext): Src[Code[Int]] = Src[Code[Int]]( sink => {
+    val s = newLocal[Code[Int]]
+    val pull = joinPoint
+    pull.define(_ => Code(
+      s := s.load + 1,
+      (s.load < stop).mux(sink.push(s.load), sink.eos)))
+    Source[Code[Int]](
+      setup0 = s.init,
+      close0 = Code._empty,
+      close = Code._empty,
+      firstPull = Code(s := start - 1, pull(())),
+      pull = pull(()))
+  })
+
+  def fold[A, S: ParameterPack](s0: S, f: (A, S) => S, ret: S => Bot)(implicit ctx: EmitStreamContext): Snk[A] = Snk[A]( src => {
+    val s = newLocal[S]
+    val pullJP = joinPoint
+    val eosJP = joinPoint
+    def push(a: A) = Code(s := f(a, s.load), pullJP(()))
+    val sink = Sink[A](eosJP(()), push)
+    val source = src(sink)
+    eosJP.define(_ => Code(source.close0, ret(s.load)))
+    pullJP.define(_ => source.pull)
+    Code(s := s0, source.setup0, source.firstPull)
+  })
+
+  def forEach[A](f: A => Code[Unit], ret: Bot)(implicit ctx: EmitStreamContext): Snk[A] = Snk[A]( src => {
+    val pullJP = joinPoint
+    val eosJP = joinPoint
+    def push(a: A) = Code(f(a), pullJP(()))
+    val sink = Sink[A](eosJP(()), push)
+    val source = src(sink)
+    eosJP.define(_ => Code(source.close0, ret))
+    pullJP.define(_ => source.pull)
+    Code(source.setup0, source.firstPull)
+  })
+
+  def mapCPS[A, B](srcA: Src[A])(
+    f: (A, B => Bot) => Bot,
+    setup0: Code[Unit] = null,
+    setup:  Code[Unit] = null,
+    close0: Code[Unit] = null,
+    close:  Code[Unit] = null
+  ): Src[B] = {
+    def sourceB(sinkB: Sink[B]): Source[B] = {
+      val sinkA = Sink[A](
+        eos = if (close == null) sinkB.eos else Code(close, sinkB.eos),
+        push = a => f(a, b => sinkB.push(b)))
+      val sourceA = srcA(sinkA)
+      Source[B](
+        setup0 = if (setup0 == null) sourceA.setup0 else Code(setup0, sourceA.setup0),
+        close0 = if (close0 == null) sourceA.close0 else Code(close0, sourceA.close0),
+        close = if (close == null) sourceA.close else Code(close, sourceA.close),
+        firstPull = if (setup == null) sourceA.firstPull else Code(setup, sourceA.firstPull),
+        pull = sourceA.pull)
+    }
+    Src[B](sourceB)
+  }
+
+  def map[A, B](srcA: Src[A])(
+    f: A => B,
+    setup0: Code[Unit] = null,
+    setup:  Code[Unit] = null,
+    close0: Code[Unit] = null,
+    close:  Code[Unit] = null
+  ): Src[B] = mapCPS(srcA)((a, k) => k(f(a)), setup0, setup, close0, close)
+
+  def addFinalizer[A](src: Src[A])(finalize: Code[Unit]): Src[A] =
+    map[A, A](src)(a => a, close = finalize)
+
+  def flatMap[A](src: Src[Src[A]])(implicit ctx: EmitStreamContext): Src[A] = Src[A](sink => {
+    val outerPullJP = joinPoint
+    var outerSource: Source[Src[A]] = null
+    var innerSource: Source[A] = null
+    val outerSink = Sink[Src[A]](
+      eos = sink.eos,
+      push = innerSrc => {
+        val innerSink = Sink[A](
+          eos = outerPullJP(()),
+          push = sink.push)
+        innerSource = innerSrc(innerSink)
+        innerSource.firstPull
+      }
+    )
+    outerSource = src(outerSink)
+    outerPullJP.define(_ => outerSource.pull)
+    Source[A](
+      setup0 = Code(outerSource.setup0, innerSource.setup0),
+      close0 = Code(innerSource.close0, outerSource.close0),
+      close = Code(innerSource.close, outerSource.close),
+      firstPull = outerSource.firstPull,
+      pull = innerSource.pull)
+  })
+
+  def filter[A](src: Src[COption[A]])(implicit ctx: EmitStreamContext): Src[A] = Src[A]( sink => {
+    val pullJP = joinPoint
+    val innerSink = Sink[COption[A]](
+      eos = sink.eos,
+      push = _.apply(none = pullJP(()), some = sink.push)
+    )
+    val source = src(innerSink)
+    pullJP.define(_ => source.pull)
+    Source[A](
+      setup0 = source.setup0,
+      close0 = source.close0,
+      close = source.close,
+      firstPull = source.firstPull,
+      pull = pullJP(()))
+  })
+
+  def filter[A: ParameterPack](src: Src[A], cond: A => Code[Boolean])(implicit ctx: EmitStreamContext): Src[A] =
+    filter(mapCPS(src)((a, k) => {
+      val as = newLocal[A]
+      Code(as := a, k(COption(!cond(as.load), as.load)))
+    }))
+
+  def zip[A: ParameterPack, B](left: Src[A], right: Src[B])(implicit ctx: EmitStreamContext): Src[(A, B)] = {
+    val eosJP = joinPoint
+    val leftEOSJP = joinPoint
+    val rightEOSJP = joinPoint
+    val pulledRight = newLocal[Code[Boolean]]
+    def resSource(resSink: Sink[(A, B)]): Source[(A, B)] = {
+      var rightSource: Source[B] = null
+      val leftSink = Sink[A](
+        eos = leftEOSJP(()),
+        push = a => {
+          val rightSink = Sink[B](
+            eos = rightEOSJP(()),
+            push = b => resSink.push((a, b)))
+          rightSource = right(rightSink)
+          pulledRight.load.mux(rightSource.pull, Code(pulledRight := true, rightSource.firstPull))
+        })
+      val leftSource = left(leftSink)
+      leftEOSJP.define(_ => Code(rightSource.close, eosJP(())))
+      rightEOSJP.define(_ => Code(leftSource.close, eosJP(())))
+      eosJP.define(_ => resSink.eos)
+      Source[(A, B)](
+        setup0 = Code(pulledRight := false, leftSource.setup0, rightSource.setup0),
+        close0 = Code(leftSource.close0, rightSource.close0),
+        close = Code(leftSource.close, rightSource.close),
+        firstPull = Code(pulledRight := false, leftSource.firstPull),
+        pull = leftSource.pull)
+    }
+    Src[(A, B)](resSource)
+  }
+}
 
 object EmitStream {
   sealed trait Init[+S]

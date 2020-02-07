@@ -20,6 +20,8 @@ package asm4s {
     def slots: Int = 1
 
     def newArray(): AbstractInsnNode
+
+    def defaultValue: Code[T]
   }
 
   class ClassInfo[C <: AnyRef](implicit val cct: ClassTag[C]) extends TypeInfo[C] {
@@ -32,6 +34,8 @@ package asm4s {
     val returnOp = ARETURN
 
     def newArray() = new TypeInsnNode(ANEWARRAY, iname)
+
+    def defaultValue = coerce[C](Code._null)
   }
 
   class ArrayInfo[T](implicit val tct: ClassTag[Array[T]]) extends TypeInfo[Array[T]] {
@@ -44,6 +48,8 @@ package asm4s {
     val returnOp = ARETURN
 
     def newArray() = new TypeInsnNode(ANEWARRAY, iname)
+
+    def defaultValue: Code[Array[T]] = coerce[Array[T]](Code._null)
   }
 }
 
@@ -64,6 +70,8 @@ package object asm4s {
     val newarrayOp = NEWARRAY
 
     def newArray() = new IntInsnNode(NEWARRAY, T_BOOLEAN)
+
+    def defaultValue: Code[Boolean] = const(false)
   }
 
   implicit object ByteInfo extends TypeInfo[Byte] {
@@ -76,6 +84,8 @@ package object asm4s {
     val newarrayOp = NEWARRAY
 
     def newArray() = new IntInsnNode(NEWARRAY, T_BYTE)
+
+    def defaultValue: Code[Byte] = const(0).toB
   }
 
   implicit object ShortInfo extends TypeInfo[Short] {
@@ -88,6 +98,8 @@ package object asm4s {
     val newarrayOp = NEWARRAY
 
     def newArray() = new IntInsnNode(NEWARRAY, T_SHORT)
+
+    def defaultValue: Code[Short] = coerce[Short](const(0))
   }
 
   implicit object IntInfo extends TypeInfo[Int] {
@@ -99,6 +111,8 @@ package object asm4s {
     val returnOp = IRETURN
 
     def newArray() = new IntInsnNode(NEWARRAY, T_INT)
+
+    def defaultValue: Code[Int] = const(0)
   }
 
   implicit object LongInfo extends TypeInfo[Long] {
@@ -111,6 +125,8 @@ package object asm4s {
     override val slots = 2
 
     def newArray() = new IntInsnNode(NEWARRAY, T_LONG)
+
+    def defaultValue: Code[Long] = const(0L)
   }
 
   implicit object FloatInfo extends TypeInfo[Float] {
@@ -122,6 +138,8 @@ package object asm4s {
     val returnOp = FRETURN
 
     def newArray() = new IntInsnNode(NEWARRAY, T_FLOAT)
+
+    def defaultValue: Code[Float] = const(0.0f)
   }
 
   implicit object DoubleInfo extends TypeInfo[Double] {
@@ -134,6 +152,8 @@ package object asm4s {
     override val slots = 2
 
     def newArray() = new IntInsnNode(NEWARRAY, T_DOUBLE)
+
+    def defaultValue: Code[Double] = const(0.0)
   }
 
   implicit object CharInfo extends TypeInfo[Char] {
@@ -146,6 +166,8 @@ package object asm4s {
     override val slots = 2
 
     def newArray() = new IntInsnNode(NEWARRAY, T_CHAR)
+
+    def defaultValue: Code[Char] = coerce[Char](const(0))
   }
 
   implicit object UnitInfo extends TypeInfo[Unit] {
@@ -158,7 +180,11 @@ package object asm4s {
     override def slots = ???
 
     def newArray() = ???
+
+    def defaultValue: Code[Unit] = ???
   }
+
+  def defaultValue[T: TypeInfo]: Code[T] = implicitly[TypeInfo[T]].defaultValue
 
   implicit def classInfo[C <: AnyRef](implicit cct: ClassTag[C]): TypeInfo[C] =
     new ClassInfo

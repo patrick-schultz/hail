@@ -29,15 +29,15 @@ class EmitStreamSuite extends HailSuite {
   }
 
   def facStaged(n: Code[Int], ret: Code[Int] => Code[Ctrl]
-  )(implicit ctx: EmitStream2.EmitStreamContext
+  )(implicit ctx: CodeStream.EmitStreamContext
   ): Code[Ctrl] = {
-    val r = EmitStream2.range(1, n)
-    val f = EmitStream2.fold[Code[Int], Code[Int]](1, (i, prod) => prod * (i + 1), ret)
-    EmitStream2.cut(r, f)
+    val r = CodeStream.range(1, n)
+    val f = CodeStream.fold[Code[Int], Code[Int]](1, (i, prod) => prod * (i + 1), ret)
+    CodeStream.cut(r, f)
   }
 
-  def range(n: Code[Int], name: String)(implicit ctx: EmitStream2.EmitStreamContext): EmitStream2.Src[Code[Int]] =
-    EmitStream2.map(EmitStream2.range(0, n))(
+  def range(n: Code[Int], name: String)(implicit ctx: CodeStream.EmitStreamContext): CodeStream.Src[Code[Int]] =
+    CodeStream.map(CodeStream.range(0, n))(
       a => a,
       setup0 = Code._println(const(s"$name setup0")),
       setup = Code._println(const(s"$name setup")),
@@ -47,10 +47,10 @@ class EmitStreamSuite extends HailSuite {
   @Test def testES2Range() {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
-        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jpb)
         val r = range(n, "range")
-        val p = EmitStream2.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
-        EmitStream2.cut(r, p)
+        val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
+        CodeStream.cut(r, p)
       }
     }
     f(10)
@@ -59,12 +59,12 @@ class EmitStreamSuite extends HailSuite {
   @Test def testES2Zip() {
     val f = compile2[Int, Int, Unit] { (mb, m, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
-        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jpb)
         val l = range(m, "left")
         val r = range(n, "right")
-        val z = EmitStream2.zip(l, r)
-        val p = EmitStream2.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
-        EmitStream2.cut(z, p)
+        val z = CodeStream.zip(l, r)
+        val p = CodeStream.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
+        CodeStream.cut(z, p)
       }
     }
     f(15, 10)
@@ -73,13 +73,13 @@ class EmitStreamSuite extends HailSuite {
   @Test def testES2FlatMap() {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
-        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jpb)
         val r = range(n, "outer")
-        def f(i: Code[Int]): EmitStream2.Src[Code[Int]] = range(i, "inner")
-        val m = EmitStream2.map(r)(f)
-        val fm = EmitStream2.flatMap(m)
-        val p = EmitStream2.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
-        EmitStream2.cut(fm, p)
+        def f(i: Code[Int]): CodeStream.Src[Code[Int]] = range(i, "inner")
+        val m = CodeStream.map(r)(f)
+        val fm = CodeStream.flatMap(m)
+        val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
+        CodeStream.cut(fm, p)
       }
     }
     f(10)
@@ -88,16 +88,16 @@ class EmitStreamSuite extends HailSuite {
   @Test def testES2ZipNested() {
     val f = compile2[Int, Int, Unit] { (mb, m, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
-        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jpb)
         val l = range(m, "left")
 
         val r = range(n, "right outer")
         def f(i: Code[Int]) = range(i, "right inner")
-        val fm = EmitStream2.flatMap(EmitStream2.map(r)(f))
+        val fm = CodeStream.flatMap(CodeStream.map(r)(f))
 
-        val z = EmitStream2.zip(l, fm)
-        val p = EmitStream2.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
-        EmitStream2.cut(z, p)
+        val z = CodeStream.zip(l, fm)
+        val p = CodeStream.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
+        CodeStream.cut(z, p)
       }
     }
     f(11, 10)
@@ -106,12 +106,12 @@ class EmitStreamSuite extends HailSuite {
   @Test def testES2Filter() {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
-        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jpb)
         val r = range(n, "source")
         def cond(i: Code[Int]): Code[Boolean] = (i % 2).ceq(0)
-        val f = EmitStream2.filter(r, cond)
-        val p = EmitStream2.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
-        EmitStream2.cut(f, p)
+        val f = CodeStream.filter(r, cond)
+        val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
+        CodeStream.cut(f, p)
       }
     }
     f(10)
@@ -122,7 +122,7 @@ class EmitStreamSuite extends HailSuite {
     def fac(n: Int): Int = (1 to n).fold(1)(_ * _)
     val facS = compile1[Int, Int] { (mb, n) =>
       JoinPoint.CallCC[Code[Int]] { (jpb, ret) =>
-        implicit val ctx = EmitStream2.EmitStreamContext(mb, jpb)
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jpb)
         facStaged(n, ret)
       }
     }
@@ -199,7 +199,8 @@ class EmitStreamSuite extends HailSuite {
       JoinPoint.CallCC[Code[Int]] { (jb, ret) =>
         val str = stream.stream
         val mb = fb.apply_method
-        str.init(mb, jb, ()) {
+        implicit val ctx = CodeStream.EmitStreamContext(mb, jb)
+        str.init(()) {
           case EmitStream.Missing => ret(0)
           case EmitStream.Start(s0) =>
             str.length(s0) match {

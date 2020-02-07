@@ -302,6 +302,7 @@ private class Emit(
     emit(ir, env, er, container, None)
 
   private def emit(ir: IR, env: E, er: EmitRegion, container: Option[AggContainer], loopEnv: Option[Env[Array[LoopRef]]]): EmitTriplet = {
+    import CodeStream.{COption, Src}
 
     def emit(ir: IR, env: E = env, er: EmitRegion = er, container: Option[AggContainer] = container, loopEnv: Option[Env[Array[LoopRef]]] = loopEnv): EmitTriplet =
       this.emit(ir, env, er, container, loopEnv)
@@ -310,6 +311,9 @@ private class Emit(
       this.wrapToMethod(irs, env, container)(useValues)
 
     def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) = this.emitArrayIterator(ir, env, er, container)
+
+    def emitStream2(ir: IR, env: E = env, container: Option[AggContainer] = container): COption[Src[COption[_]]] =
+      EmitStream2(this, Streamify(ir), env, er, container)
 
     def emitDeforestedNDArray(ir: IR) =
       deforestNDArray(resultRegion, ir, env).emit(coerce[PNDArray](ir.pType))

@@ -261,6 +261,35 @@ object EmitStream2 {
 //    }
 //  }
 
+  def fromParameterized[P, A](
+    stream: EmitStream.Parameterized[P, A]
+  ): P => COption[Src[A]] = p => new COption[Src[A]] {
+    def apply(none: Bot, some: Src[A] => Bot)(implicit ctx: EmitStreamContext): Bot = {
+      import EmitStream.{Missing, Start, EOS, Yield}
+      implicit val sP = stream.stateP
+      val s = newLocal[stream.S]
+
+      val src = Src[A](sink => {
+        val pull = joinPoint
+        pull.define(_ => stream.step(s.load) {
+          case EOS => sink.eos
+          case Yield(elt, s1) => Code(s := s1, sink.push(elt))
+        })
+        Source[A](
+          setup0 = s.init,
+          close0 = Code._empty,
+          close = Code._empty,
+          firstPull = pull(()),
+          pull = pull(()))
+      })
+
+      stream.init(p) {
+        case Missing => none
+        case Start(s0) => Code(s := s0, some(src))
+      }
+    }
+  }
+
   private[ir] def apply(
     emitter: Emit,
     streamIR0: IR,

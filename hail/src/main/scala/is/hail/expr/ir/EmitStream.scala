@@ -11,45 +11,47 @@ import is.hail.utils._
 import scala.language.{existentials, higherKinds}
 import scala.reflect.ClassTag
 
+case class EmitStreamContext(mb: MethodBuilder, jb: JoinPointBuilder)
+
 abstract class COption[A] { self =>
-  def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl]
+  def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl]
 
   def map[B](f: A => B): COption[B] = new COption[B] {
-    def apply(none: Code[Ctrl], some: B => Code[Ctrl]): Code[Ctrl] =
+    def apply(none: Code[Ctrl], some: B => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] =
       self.apply(none, a => some(f(a)))
   }
 
   def flatMap[B](f: A => COption[B]): COption[B] = new COption[B] {
-    def apply(none: Code[Ctrl], some: B => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = {
-      val noneJP = jb.joinPoint()
+    def apply(none: Code[Ctrl], some: B => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
+      val noneJP = ctx.jb.joinPoint()
       noneJP.define(_ => none)
-      self.apply(noneJP(()), f(_)(noneJP(()), some, jb), jb)
+      self.apply(noneJP(()), f(_)(noneJP(()), some))
     }
-  }
-
-  def toEmitTriplet(mb: MethodBuilder)(implicit pp: ParameterPack[A]): EmitTriplet = {
-    val m = mb.newLocal[Boolean]
-    val v = pp.newLocals(mb)
-    val setup = JoinPoint.CallCC[Unit] { (jb, ret) =>
-      apply(Code(m := true, v.init, ret(())), a => Code(m := false, v := a, ret(())), jb)
-    }
-    EmitTriplet(setup, m, v.load)
   }
 }
 class CNone[A] extends COption[A] {
-  def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = none
+  def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = none
 }
 class CSome[A](a: A) extends COption[A] {
-  def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = some(a)
+  def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = some(a)
 }
 object COption {
   def apply[A](missing: Code[Boolean], value: A): COption[A] = new COption[A] {
-    def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = missing.mux(none, some(value))
+    def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = missing.mux(none, some(value))
   }
-  def fromEmitTriplet[A](et: TypedTriplet[A]): COption[A] = new COption[A] {
-    def apply(none: Code[Ctrl], some: A => Code[Ctrl], jb: JoinPointBuilder): Code[Ctrl] = {
-      et.m.mux(none, some(et.v))
+  def some[A](value: A): COption[A] = new CSome(value)
+  def fromEmitTriplet[A](et: TypedTriplet[A]): COption[Code[A]] = new COption[Code[A]] {
+    def apply(none: Code[Ctrl], some: Code[A] => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
+      et.m.mux(none, some(coerce[A](et.v)))
     }
+  }
+  def toEmitTriplet[A: TypeInfo](opt: COption[Code[A]], mb: MethodBuilder): EmitTriplet = {
+    val m = mb.newLocal[Boolean]
+    val v = mb.newLocal[A]
+    val setup = JoinPoint.CallCC[Unit] { (jb, ret) =>
+      opt(Code(m := true, v := Code.defaultValue[A], ret(())), a => Code(m := false, v := a, ret(())))(EmitStreamContext(mb, jb))
+    }
+    EmitTriplet(setup, m, v.load())
   }
 }
 
@@ -57,7 +59,6 @@ object CodeStream { self =>
   type Eff = Code[Unit]
   type Bot = Code[Ctrl]
 
-  case class EmitStreamContext(mb: MethodBuilder, jb: JoinPointBuilder)
   def newLocal[T: ParameterPack](implicit ctx: EmitStreamContext): ParameterStore[T] = implicitly[ParameterPack[T]].newLocals(ctx.mb)
   def joinPoint(implicit ctx: EmitStreamContext): DefinableJoinPoint[Unit] = ctx.jb.joinPoint()
 
@@ -274,7 +275,7 @@ object EmitStream2 {
       streamIR match {
         case NA(_) => new CNone[Src[COption[_]]]
         case StreamRange(startIR, stopIR, stepIR) => new COption[Src[COption[_]]] {
-          def apply(none: Bot, some: Src[COption[_]] => Bot): Bot = {
+          def apply(none: Bot, some: Src[COption[_]] => Bot)(implicit ctx: EmitStreamContext): Bot = {
             val step = fb.newField[Int]("sr_step")
             val start = fb.newField[Int]("sr_start")
             val stop = fb.newField[Int]("sr_stop")
@@ -295,7 +296,7 @@ object EmitStream2 {
                     (start >= stop).mux(0L, (stop.toL - start.toL - 1L) / step.toL + 1L)),
                   (llen > const(Int.MaxValue.toLong)).mux(
                     Code._fatal("Array range cannot have more than MAXINT elements."),
-                    some(map(range(start.load, step.load, llen.load.toI)))))))
+                    some(CodeStream.map(range(start.load(), step.load(), llen.load().toI))(COption.some))))))
           }
         }
 
@@ -308,8 +309,6 @@ object EmitStream2 {
 
 
 object EmitStream {
-  import CodeStream.EmitStreamContext
-
   sealed trait Init[+S]
   object Missing extends Init[Nothing]
   case class Start[S](s0: S) extends Init[S]
@@ -1191,7 +1190,7 @@ case class EmitStream(
             stream.init(()) {
               case Missing => Code(m := true, ret(stream.emptyState))
               case Start(s0) => Code(m := false, ret(s0))
-            }(CodeStream.EmitStreamContext(mb, jb))
+            }(EmitStreamContext(mb, jb))
           }
 
         val addElements =
@@ -1204,7 +1203,7 @@ case class EmitStream(
                 cont(elt.m, elt.value),
                 state := s1,
                 loop(()))
-            }(CodeStream.EmitStreamContext(mb, jb)) }
+            }(EmitStreamContext(mb, jb)) }
             loop(())
           }
 

@@ -16,7 +16,7 @@ object ParameterPack {
       def push(v: Code[T]): Code[Unit] = coerce[Unit](v)
       def newLocals(mb: MethodBuilder): ParameterStore[Code[T]] = {
         val x = mb.newLocal[T]
-        ParameterStore(x.storeInsn, x.load(), x := defaultValue[T])
+        ParameterStore(x.storeInsn, x.load(), x := Code.defaultValue[T])
       }
     }
 

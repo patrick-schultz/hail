@@ -184,8 +184,6 @@ package object asm4s {
     def defaultValue: Code[Unit] = ???
   }
 
-  def defaultValue[T: TypeInfo]: Code[T] = implicitly[TypeInfo[T]].defaultValue
-
   implicit def classInfo[C <: AnyRef](implicit cct: ClassTag[C]): TypeInfo[C] =
     new ClassInfo
 

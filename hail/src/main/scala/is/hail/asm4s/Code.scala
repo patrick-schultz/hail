@@ -349,6 +349,8 @@ object Code {
 
   def doubleValue(x: Code[java.lang.Number]): Code[Double] = x.invoke[Double]("doubleValue")
 
+  def defaultValue[T: TypeInfo]: Code[T] = implicitly[TypeInfo[T]].defaultValue
+
   def getStatic[T: ClassTag, S: ClassTag : TypeInfo](field: String): Code[S] = {
     val f = FieldRef[T, S](field)
     assert(f.isStatic)

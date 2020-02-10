@@ -303,7 +303,7 @@ private class Emit(
     emit(ir, env, er, container, None)
 
   private def emit(ir: IR, env: E, er: EmitRegion, container: Option[AggContainer], loopEnv: Option[Env[Array[LoopRef]]]): EmitTriplet = {
-    import CodeStream.{COption, Src}
+    import CodeStream.Src
 
     def emit(ir: IR, env: E = env, er: EmitRegion = er, container: Option[AggContainer] = container, loopEnv: Option[Env[Array[LoopRef]]] = loopEnv): EmitTriplet =
       this.emit(ir, env, er, container, loopEnv)
@@ -313,8 +313,8 @@ private class Emit(
 
     def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) = this.emitArrayIterator(ir, env, er, container)
 
-    def emitStream2(ir: IR, env: E = env, container: Option[AggContainer] = container): COption[Src[COption[_]]] =
-      EmitStream2(this, Streamify(ir), env, er, container)
+    def emitStream2(ir: IR, ctx: EmitStreamContext, env: E = env, container: Option[AggContainer] = container): COption[Src[COption[_]]] =
+      EmitStream2(this, Streamify(ir), env, er, container)(ctx)
 
     def emitDeforestedNDArray(ir: IR) =
       deforestNDArray(resultRegion, ir, env).emit(coerce[PNDArray](ir.pType))
@@ -730,28 +730,31 @@ private class Emit(
           implicit val accPack = TypedTriplet.pack(accType)
           val tti = typeToTypeInfo(accType)
           val eti = typeToTypeInfo(eltType)
+          val res = accPack.newLocals(mb.fb, "arrayFoldRes")
 
-          val streamOpt = emitStream2(a)
-          for {
-            stream <- streamOpt
-          } yield {
-            JoinPoint.CallCC[TypedTriplet[accType.type]] { (jb, ret) =>
-              implicit val ctx = CodeStream.EmitStreamContext(mb, jb)
-              def foldBody(a: TypedTriplet[eltType.type], s: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
-                val xa = eltPack.newLocals(mb)
-                val xs = accPack.newLocals(mb)
-                val bodyenv = env.bind(
-                  (accumName, (tti, xs.load.m, xs.load.v)),
-                  (valueName, (eti, xa.load.m, xa.load.v)))
+          val callCC = JoinPoint.CallCC[TypedTriplet[accType.type]] { (jb, ret) =>
+            implicit val ctx = EmitStreamContext(mb, jb)
+            val streamOpt = emitStream2(a, ctx)
+            streamOpt.apply(
+              none = ret(TypedTriplet.missing(accType)),
+              some = stream => {
+                def foldBody(a: TypedTriplet[eltType.type], s: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
+                  val xa = eltPack.newLocals(mb)
+                  val xs = accPack.newLocals(mb)
+                  val bodyenv = env.bind(
+                    (accumName, (tti, xs.load.m, xs.load.v)),
+                    (valueName, (eti, xa.load.m, xa.load.v)))
 
-                val codeB = emit(body, env = bodyenv)
-                TypedTriplet(accType, codeB)
-              }
-              val codeZ = emit(zero)
-              val sink = CodeStream.fold[TypedTriplet[eltType.type], TypedTriplet[accType.type]](
-                TypedTriplet(accType, codeZ), foldBody, ret)
-              CodeStream.cut(stream, sink)
-            }
+                  val codeB = emit(body, env = bodyenv)
+                  TypedTriplet(accType, codeB)
+                }
+                val codeZ = emit(zero)
+                val sink = CodeStream.fold[TypedTriplet[eltType.type], TypedTriplet[accType.type]](
+                  TypedTriplet(accType, codeZ), foldBody, ret)
+                CodeStream.cut(stream, sink)
+              })
+          }
+          Code(res := callCC, res.load)
         } catch {
           case _ =>
             val typ = ir.typ

@@ -24,7 +24,7 @@ package object ir {
 
   def genSym(base: String): Sym = Sym.gen(base)
 
-  def typeToTypeInfo(t: PType): TypeInfo[_] = typeToTypeInfo(t.virtualType)
+  def typeToTypeInfo(t: PType): TypeInfo[t.type] = typeToTypeInfo(t.virtualType).asInstanceOf[TypeInfo[t.type]]
 
   def typeToTypeInfo(t: Type): TypeInfo[_] = t.fundamentalType match {
     case _: TInt32 => typeInfo[Int]

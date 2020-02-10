@@ -53,6 +53,8 @@ object COption {
     }
     EmitTriplet(setup, m, v.load())
   }
+  def toTypedTriplet(t: PType, mb: MethodBuilder)(opt: COption[Code[t.type]]): TypedTriplet[t.type] =
+    TypedTriplet(t, toEmitTriplet(opt.asInstanceOf[COption[Code[t.type]]], mb)(typeToTypeInfo(t)))
 }
 
 object CodeStream { self =>
@@ -834,8 +836,6 @@ object EmitStream {
     container: Option[AggContainer]
   ): EmitStream = {
     val fb = emitter.mb.fb
-//    implicit val ctx: EmitStreamContext = EmitStreamContext(fb, )
-
     def present(v: Code[_]): EmitTriplet = EmitTriplet(Code._empty, false, v)
 
     def emitIR(ir: IR, env: Emit.E): EmitTriplet =

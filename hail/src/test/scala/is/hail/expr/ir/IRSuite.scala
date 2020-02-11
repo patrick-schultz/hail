@@ -89,6 +89,17 @@ class IRSuite extends HailSuite {
     assert(node.pType2 == expected)
   }
 
+  @Test def testStream2() {
+    assertEvalsTo(
+      ArrayFold(
+        ArrayRange(I32(0), I32(5), I32(1)),
+        I32(0),
+        "acc",
+        "i",
+        ApplyBinaryPrimOp(Add(), Ref("acc", TInt32()), Ref("i", TInt32()))),
+      10)
+  }
+
   @Test def testI32() {
     assertEvalsTo(I32(5), 5)
   }

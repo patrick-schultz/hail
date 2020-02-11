@@ -8,6 +8,7 @@ import is.hail.expr.types.virtual._
 import is.hail.utils._
 import is.hail.variant.Call2
 import is.hail.HailSuite
+import is.hail.asm4s.joinpoint.JoinPoint.CallCC
 import org.apache.spark.sql.Row
 import org.testng.annotations.Test
 
@@ -32,12 +33,12 @@ class EmitStreamSuite extends HailSuite {
   )(implicit ctx: EmitStreamContext
   ): Code[Ctrl] = {
     val r = CodeStream.range(1, 1, n)
-    val f = CodeStream.fold[Code[Int], Code[Int]](1, (i, prod) => prod * (i + 1), ret)
+    val f = CodeStream.fold[Code[Int], Code[Int]](1, (i, prod) => prod * i, ret)
     CodeStream.cut(r, f)
   }
 
-  def range(n: Code[Int], name: String)(implicit ctx: EmitStreamContext): CodeStream.Src[Code[Int]] =
-    CodeStream.map(CodeStream.range(0, 1, n))(
+  def range(start: Code[Int], stop: Code[Int], name: String)(implicit ctx: EmitStreamContext): CodeStream.Src[Code[Int]] =
+    CodeStream.map(CodeStream.range(start, 1, stop - start))(
       a => a,
       setup0 = Code._println(const(s"$name setup0")),
       setup = Code._println(const(s"$name setup")),
@@ -48,20 +49,20 @@ class EmitStreamSuite extends HailSuite {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
-        val r = range(n, "range")
+        val r = range(0, n, "range")
         val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
         CodeStream.cut(r, p)
       }
     }
-    f(10)
+    f(2)
   }
 
   @Test def testES2Zip() {
     val f = compile2[Int, Int, Unit] { (mb, m, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
-        val l = range(m, "left")
-        val r = range(n, "right")
+        val l = range(0, m, "left")
+        val r = range(0, n, "right")
         val z = CodeStream.zip(l, r)
         val p = CodeStream.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
         CodeStream.cut(z, p)
@@ -74,8 +75,8 @@ class EmitStreamSuite extends HailSuite {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
-        val r = range(n, "outer")
-        def f(i: Code[Int]): CodeStream.Src[Code[Int]] = range(i, "inner")
+        val r = range(0, n, "outer")
+        def f(i: Code[Int]): CodeStream.Src[Code[Int]] = range(0, i, "inner")
         val m = CodeStream.map(r)(f)
         val fm = CodeStream.flatMap(m)
         val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
@@ -89,10 +90,10 @@ class EmitStreamSuite extends HailSuite {
     val f = compile2[Int, Int, Unit] { (mb, m, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
-        val l = range(m, "left")
+        val l = range(0, m, "left")
 
-        val r = range(n, "right outer")
-        def f(i: Code[Int]) = range(i, "right inner")
+        val r = range(0, n, "right outer")
+        def f(i: Code[Int]) = range(0, i, "right inner")
         val fm = CodeStream.flatMap(CodeStream.map(r)(f))
 
         val z = CodeStream.zip(l, fm)
@@ -107,7 +108,7 @@ class EmitStreamSuite extends HailSuite {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
-        val r = range(n, "source")
+        val r = range(0, n, "source")
         def cond(i: Code[Int]): Code[Boolean] = (i % 2).ceq(0)
         val f = CodeStream.filter(r, cond)
         val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
@@ -159,6 +160,38 @@ class EmitStreamSuite extends HailSuite {
         SafeRow.read(PArray(stream.elementType), r, off).asInstanceOf[IndexedSeq[Any]]
     }
   }
+//
+//  private def compileStream2[F >: Null : TypeInfo, T](
+//    streamIR: IR,
+//    inputTypes: Seq[PType]
+//  )(call: (F, Region, T) => Long): T => IndexedSeq[Any] = {
+//    val argTypeInfos = new ArrayBuilder[MaybeGenericTypeInfo[_]]
+//    argTypeInfos += GenericTypeInfo[Region]()
+//    inputTypes.foreach { t =>
+//      argTypeInfos ++= Seq(GenericTypeInfo()(typeToTypeInfo(t)), GenericTypeInfo[Boolean]())
+//    }
+//    val fb = new EmitFunctionBuilder[F](argTypeInfos.result(), GenericTypeInfo[Long])
+//    val mb = fb.apply_method
+//    mb.emit {
+//      CallCC[Unit] { (jb, ret) =>
+//        val stream = ExecuteContext.scoped { ctx =>
+//          EmitStream2(new Emit(ctx, mb), streamIR, Env.empty, EmitRegion.default(mb), None)(EmitStreamContext(mb, jb))
+//        }
+//      }
+//      val arrayt = stream
+//        .toArrayIterator(mb)
+//        .toEmitTriplet(mb, PArray(stream.elementType))
+//      Code(arrayt.setup, arrayt.m.mux(0L, arrayt.v))
+//    }
+//    val f = fb.resultWithIndex()
+//    (arg: T) => Region.scoped { r =>
+//      val off = call(f(0, r), r, arg)
+//      if (off == 0L)
+//        null
+//      else
+//        SafeRow.read(PArray(stream.elementType), r, off).asInstanceOf[IndexedSeq[Any]]
+//    }
+//  }
 
   private def compileStream(ir: IR, inputType: PType): Any => IndexedSeq[Any] = {
     type F = AsmFunction3[Region, Long, Boolean, Long]

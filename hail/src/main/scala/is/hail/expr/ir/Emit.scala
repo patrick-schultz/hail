@@ -728,8 +728,8 @@ private class Emit(
           val accType = ir.pType
           implicit val eltPack = TypedTriplet.pack(eltType)
           implicit val accPack = TypedTriplet.pack(accType)
-          val tti = typeToTypeInfo(accType)
-          val eti: TypeInfo[eltType.type] = typeToTypeInfo(eltType).asInstanceOf[TypeInfo[eltType.type]]
+          val accTI = typeToTypeInfo(accType)
+          val eltTI: TypeInfo[eltType.type] = typeToTypeInfo(eltType).asInstanceOf[TypeInfo[eltType.type]]
 
           val resOpt = new COption[Code[accType.type]] {
             def apply(none: Code[Ctrl], some: Code[accType.type] => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
@@ -737,15 +737,15 @@ private class Emit(
               streamOpt.apply(
                 none = none,
                 some = stream => {
-                  def foldBody(a: TypedTriplet[eltType.type], s: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
-                    val xa = eltPack.newLocals(mb)
-                    val xs = accPack.newLocals(mb)
+                  def foldBody(elt: TypedTriplet[eltType.type], acc: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
+                    val xElt = eltPack.newLocals(mb)
+                    val xAcc = accPack.newLocals(mb)
                     val bodyenv = env.bind(
-                      (accumName, (tti, xs.load.m, xs.load.v)),
-                      (valueName, (eti, xa.load.m, xa.load.v)))
+                      (accumName, (accTI, xAcc.load.m, xAcc.load.v)),
+                      (valueName, (eltTI, xElt.load.m, xElt.load.v)))
 
                     val codeB = emit(body, env = bodyenv)
-                    TypedTriplet(accType, codeB)
+                    TypedTriplet(accType, EmitTriplet(Code(xElt := elt, xAcc := acc, codeB.setup), codeB.m, codeB.v))
                   }
                   val codeZ = emit(zero)
                   def ret(acc: TypedTriplet[accType.type]): Code[Ctrl] =

@@ -99,7 +99,7 @@ object CodeStream { self =>
     val pull = joinPoint
     pull.define(_ => (rem.load > 0).mux(sink.push(i.load), sink.eos))
     Source[Code[Int]](
-      setup0 = i.init,
+      setup0 = Code(i.init, rem.init),
       close0 = Code._empty,
       close = Code._empty,
       firstPull = Code(i := start, rem := len, pull(())),
@@ -268,15 +268,16 @@ object EmitStream2 {
       import EmitStream.{Missing, Start, EOS, Yield}
       implicit val sP = stream.stateP
       val s = newLocal[stream.S]
+      val sNew = newLocal[stream.S]
 
       val src = Src[A](sink => {
         val pull = joinPoint
-        pull.define(_ => stream.step(s.load) {
+        pull.define(_ => Code(s := sNew.load, stream.step(s.load) {
           case EOS => sink.eos
-          case Yield(elt, s1) => Code(s := s1, sink.push(elt))
-        })
+          case Yield(elt, s1) => Code(sNew := s1, sink.push(elt))
+        }))
         Source[A](
-          setup0 = s.init,
+          setup0 = Code(s.init, sNew.init),
           close0 = Code._empty,
           close = Code._empty,
           firstPull = pull(()),
@@ -304,34 +305,38 @@ object EmitStream2 {
 
     def emitStream(streamIR: IR, env: Emit.E): COption[Src[COption[_]]] =
       streamIR match {
-        case NA(_) => new CNone[Src[COption[_]]]
-        case StreamRange(startIR, stopIR, stepIR) => new COption[Src[COption[_]]] {
-          def apply(none: Bot, some: Src[COption[_]] => Bot)(implicit ctx: EmitStreamContext): Bot = {
-            val step = fb.newField[Int]("sr_step")
-            val start = fb.newField[Int]("sr_start")
-            val stop = fb.newField[Int]("sr_stop")
-            val llen = fb.newField[Long]("sr_llen")
-            val startt = emitIR(startIR, env)
-            val stopt = emitIR(stopIR, env)
-            val stept = emitIR(stepIR, env)
-            Code(startt.setup, stopt.setup, stept.setup,
-              (startt.m || stopt.m || stept.m).mux(
-                none,
-                Code(
-                  start := startt.value,
-                  stop := stopt.value,
-                  step := stept.value,
-                  (step ceq 0).orEmpty(Code._fatal("Array range cannot have step size 0.")),
-                  llen := (step < 0).mux(
-                    (start <= stop).mux(0L, (start.toL - stop.toL - 1L) / (-step).toL + 1L),
-                    (start >= stop).mux(0L, (stop.toL - start.toL - 1L) / step.toL + 1L)),
-                  (llen > const(Int.MaxValue.toLong)).mux(
-                    Code._fatal("Array range cannot have more than MAXINT elements."),
-                    some(CodeStream.map(range(start.load(), step.load(), llen.load().toI))(COption.some))))))
-          }
-        }
+//        case NA(_) => new CNone[Src[COption[_]]]
+//        case StreamRange(startIR, stopIR, stepIR) => new COption[Src[COption[_]]] {
+//          def apply(none: Bot, some: Src[COption[_]] => Bot)(implicit ctx: EmitStreamContext): Bot = {
+//            val step = fb.newField[Int]("sr_step")
+//            val start = fb.newField[Int]("sr_start")
+//            val stop = fb.newField[Int]("sr_stop")
+//            val llen = fb.newField[Long]("sr_llen")
+//            val startt = emitIR(startIR, env)
+//            val stopt = emitIR(stopIR, env)
+//            val stept = emitIR(stepIR, env)
+//            Code(startt.setup, stopt.setup, stept.setup,
+//              (startt.m || stopt.m || stept.m).mux(
+//                none,
+//                Code(
+//                  start := startt.value,
+//                  stop := stopt.value,
+//                  step := stept.value,
+//                  (step ceq 0).orEmpty(Code._fatal("Array range cannot have step size 0.")),
+//                  llen := (step < 0).mux(
+//                    (start <= stop).mux(0L, (start.toL - stop.toL - 1L) / (-step).toL + 1L),
+//                    (start >= stop).mux(0L, (stop.toL - start.toL - 1L) / step.toL + 1L)),
+//                  (llen > const(Int.MaxValue.toLong)).mux(
+//                    Code._fatal("Array range cannot have more than MAXINT elements."),
+//                    some(CodeStream.map(range(start.load(), step.load(), llen.load().toI))(COption.some))))))
+//          }
+//        }
 
-        case _ => ???
+        case _ =>
+          val EmitStream(parameterized, eltType) =
+            EmitStream.apply(emitter, streamIR, env, er, container)
+          val optSrc = fromParameterized(parameterized)(())
+          optSrc.map(src => CodeStream.map(src)(opt => COption.fromEmitTriplet(TypedTriplet(eltType, opt))))
       }
 
     emitStream(streamIR0, env0)

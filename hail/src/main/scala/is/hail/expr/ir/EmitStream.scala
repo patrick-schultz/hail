@@ -65,10 +65,10 @@ object CodeStream { self =>
   def joinPoint()(implicit ctx: EmitStreamContext): DefinableJoinPoint[Unit] = ctx.jb.joinPoint()
   def joinPoint[T: ParameterPack](implicit ctx: EmitStreamContext): DefinableJoinPoint[T] = ctx.jb.joinPoint[T](ctx.mb)
 
-  private case class Source[A](setup0: Eff, close0: Eff, setup: Eff, close: Eff, firstPull: Option[Bot], pull: Bot)
+  private case class Source[+A](setup0: Eff, close0: Eff, setup: Eff, close: Eff, firstPull: Option[Bot], pull: Bot)
   case class Sink[A](eos: Bot, push: A => Bot)
 
-  abstract class Stream[A] {
+  abstract class Stream[+A] {
     private[CodeStream] def apply(eos: Bot, push: A => Bot): Source[A]
   }
 
@@ -218,7 +218,7 @@ object CodeStream { self =>
   }
 
   def filter[A: ParameterPack](src: Stream[A], cond: A => Code[Boolean])(implicit ctx: EmitStreamContext): Stream[A] =
-    filter(mapCPS(src)((a, k) => {
+    filter(mapCPS[A, COption[A]](src)((a, k) => {
       val as = newLocal[A]
       Code(as := a, k(COption(!cond(as.load), as.load)))
     }))
@@ -228,7 +228,7 @@ object CodeStream { self =>
       val eosJP = joinPoint()
       val leftEOSJP = joinPoint()
       val rightEOSJP = joinPoint()
-      var pulledRight: ParameterStore[Code[Boolean]] = null
+      var pulledRight: Option[ParameterStore[Code[Boolean]]] = None
       var rightSource: Option[Source[B]] = None
       val leftSource = left(
         eos = leftEOSJP(()),
@@ -238,8 +238,9 @@ object CodeStream { self =>
             push = b => push((a, b))))
           rightSource.get.firstPull match {
             case Some(fp) =>
-              pulledRight = newLocal[Code[Boolean]]
-              pulledRight.load.mux(rightSource.get.pull, Code(pulledRight := true, fp))
+              val pr = newLocal[Code[Boolean]]
+              pulledRight = Some(pr)
+              pr.load.mux(rightSource.get.pull, Code(pr := true, fp))
             case None =>
               rightSource.get.pull
           }
@@ -251,23 +252,71 @@ object CodeStream { self =>
       rightSource match {
         case None => leftSource.asInstanceOf[Source[(A, B)]]
         case Some(rs) =>
-          if (rs.firstPull.isEmpty)
-            Source[(A, B)](
-              setup0 = Code(leftSource.setup0, rs.setup0),
-              close0 = Code(leftSource.close0, rs.close0),
-              setup = Code(leftSource.setup, rs.setup),
-              close = Code(leftSource.close, rs.close),
-              firstPull = leftSource.firstPull,
-              pull = leftSource.pull)
-          else
-            Source[(A, B)](
-              setup0 = Code(pulledRight := false, leftSource.setup0, rs.setup0),
-              close0 = Code(leftSource.close0, rs.close0),
-              setup = Code(pulledRight := false, leftSource.setup, rs.setup),
-              close = Code(leftSource.close, rs.close),
-              firstPull = leftSource.firstPull,
-              pull = leftSource.pull)
+          Source[(A, B)](
+            setup0 = Code(pulledRight.map(_ := false).getOrElse(Code._empty), leftSource.setup0, rs.setup0),
+            close0 = Code(leftSource.close0, rs.close0),
+            setup = Code(pulledRight.map(_ := false).getOrElse(Code._empty), leftSource.setup, rs.setup),
+            close = Code(leftSource.close, rs.close),
+            firstPull = leftSource.firstPull,
+            pull = leftSource.pull)
       }
+    }
+  }
+
+  def multiZip(streams: IndexedSeq[Stream[Code[_]]])(implicit ctx: EmitStreamContext): Stream[IndexedSeq[Code[_]]] = new Stream[IndexedSeq[Code[_]]] {
+    def apply(eos: Bot, push: IndexedSeq[Code[_]] => Bot): Source[IndexedSeq[Code[_]]] = {
+      val closeJPs = streams.map(_ => joinPoint())
+      val eosJP = closeJPs(0)
+      val terminatingStream = newLocal[Code[Int]]
+      val firstPull = newLocal[Code[Boolean]]
+
+      def nthSource(n: Int, acc: IndexedSeq[Code[_]]): (Source[Code[_]], IndexedSeq[Code[Unit]]) = {
+        if (n == streams.length - 1) {
+          val src = streams(n)(
+            Code(terminatingStream := n, eosJP(())),
+            c => push(acc :+ c))
+          (src.copy(
+            pull = src.firstPull match {
+              case None => firstPull.load.mux(Code(firstPull := false, src.pull), src.pull)
+              case Some(fp) => firstPull.load.mux(Code(firstPull := false, fp), src.pull)
+            },
+            firstPull = None),
+            IndexedSeq(src.close))
+        } else {
+          var rest: Source[Code[_]] = null
+          var closes: IndexedSeq[Code[Unit]] = null
+          val src = streams(n)(
+            Code(terminatingStream := n, eosJP(())),
+            c => {
+              val t = nthSource(n+1, acc :+ c)
+              rest = t._1
+              closes = t._2
+              rest.pull
+            })
+          (Source[Code[_]](
+            setup0 = Code(src.setup0, rest.setup0),
+            close0 = Code(rest.close0, src.close0),
+            setup = Code(src.setup, rest.setup),
+            close = Code(rest.close, src.close),
+            firstPull = None,
+            pull = src.firstPull match {
+              case None => src.pull
+              case Some(fp) => firstPull.load.mux(fp, src.pull)
+            }),
+            src.close +: closes)
+        }
+      }
+
+      val (source, closes) = nthSource(0, IndexedSeq.empty)
+
+      closeJPs.zipWithIndex.foreach { case (jp, i) =>
+        val next = if (i == streams.length - 1) eos else closeJPs(i + 1)(())
+        jp.define(_ => terminatingStream.load.ceq(i).mux(
+          next,
+          Code(closes(i), next)))
+      }
+
+      source.copy(setup0 = Code(firstPull := true, source.setup0), setup = Code(firstPull := true, source.setup))
     }
   }
 

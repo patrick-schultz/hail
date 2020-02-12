@@ -195,6 +195,21 @@ class EmitStreamSuite extends HailSuite {
     f(false, 10)
   }
 
+  @Test def testES2MultiZip() {
+    import scala.collection.IndexedSeq
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStreamContext(mb, jpb)
+        val s1 = range(0, n, "s1")
+        val s2 = range(1, n, "s2")
+        val s3 = range(2, n, "s3")
+        val z = CodeStream.multiZip(IndexedSeq(s1, s2, s3)).asInstanceOf[CodeStream.Stream[IndexedSeq[Code[Int]]]]
+        CodeStream.forEach[IndexedSeq[Code[Int]]](z, x => Code._println(const("(").concat(x(0).toS).concat(", ").concat(x(1).toS).concat(", ").concat(x(2).toS).concat(")")), ret(()))
+      }
+    }
+    f(10)
+  }
+
   @Test def testES2Fac() {
     def fac(n: Int): Int = (1 to n).fold(1)(_ * _)
     val facS = compile1[Int, Int] { (mb, n) =>

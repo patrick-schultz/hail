@@ -33,25 +33,23 @@ class EmitStreamSuite extends HailSuite {
   )(implicit ctx: EmitStreamContext
   ): Code[Ctrl] = {
     val r = CodeStream.range(1, 1, n)
-    val f = CodeStream.fold[Code[Int], Code[Int]](1, (i, prod) => prod * i, ret)
-    CodeStream.cut(r, f)
+    CodeStream.fold[Code[Int], Code[Int]](r, 1, (i, prod) => prod * i, ret)
   }
 
-  def range(start: Code[Int], stop: Code[Int], name: String)(implicit ctx: EmitStreamContext): CodeStream.Src[Code[Int]] =
+  def range(start: Code[Int], stop: Code[Int], name: String)(implicit ctx: EmitStreamContext): CodeStream.Stream[Code[Int]] =
     CodeStream.map(CodeStream.range(start, 1, stop - start))(
       a => a,
-      setup0 = Code._println(const(s"$name setup0")),
-      setup = Code._println(const(s"$name setup")),
-      close0 = Code._println(const(s"$name close0")),
-      close = Code._println(const(s"$name close")))
+      setup0 = Some(Code._println(const(s"$name setup0"))),
+      setup = Some(Code._println(const(s"$name setup"))),
+      close0 = Some(Code._println(const(s"$name close0"))),
+      close = Some(Code._println(const(s"$name close"))))
 
   @Test def testES2Range() {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
         val r = range(0, n, "range")
-        val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
-        CodeStream.cut(r, p)
+        CodeStream.forEach[Code[Int]](r, i => Code._println(i.toS), ret(()))
       }
     }
     f(2)
@@ -64,23 +62,76 @@ class EmitStreamSuite extends HailSuite {
         val l = range(0, m, "left")
         val r = range(0, n, "right")
         val z = CodeStream.zip(l, r)
-        val p = CodeStream.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
-        CodeStream.cut(z, p)
+        CodeStream.forEach[(Code[Int], Code[Int])](z, x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
       }
     }
     f(15, 10)
+  }
+
+  @Test def testES2ZipWithEmpty() {
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStreamContext(mb, jpb)
+        val l = CodeStream.map(CodeStream.empty[Code[Int]])(
+          a => a,
+          setup0 = Some(Code._println(const(s"left setup0"))),
+          setup = Some(Code._println(const(s"left setup"))),
+          close0 = Some(Code._println(const(s"left close0"))),
+          close = Some(Code._println(const(s"left close"))))
+        val r = range(0, n, "right")
+        val z = CodeStream.zip(r, l)
+        CodeStream.forEach[(Code[Int], Code[Int])](z, x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
+      }
+    }
+    f(10)
+  }
+
+  @Test def testES2FlatMapWithEmptyOuter() {
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStreamContext(mb, jpb)
+        val outer = CodeStream.map(CodeStream.empty[Code[Int]])(
+          a => a,
+          setup0 = Some(Code._println(const(s"outer setup0"))),
+          setup = Some(Code._println(const(s"outer setup"))),
+          close0 = Some(Code._println(const(s"outer close0"))),
+          close = Some(Code._println(const(s"outer close"))))
+        def inner(i: Code[Int]) = range(0, i, "inner")
+        val z = CodeStream.flatMap(CodeStream.map(outer)(inner))
+        CodeStream.forEach[Code[Int]](z, i => Code._println(i.toS), ret(()))
+      }
+    }
+    f(10)
+  }
+
+  @Test def testES2FlatMapWithEmptyInner() {
+    val f = compile1[Int, Unit] { (mb, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStreamContext(mb, jpb)
+        val outer = range(0, n, "outer")
+        def inner(i: Code[Int]) =
+          CodeStream.map(CodeStream.empty[Code[Int]])(
+            a => a,
+            setup0 = Some(Code._println(const(s"inner setup0"))),
+            setup = Some(Code._println(const(s"inner setup"))),
+            close0 = Some(Code._println(const(s"inner close0"))),
+            close = Some(Code._println(const(s"inner close"))))
+        val z = CodeStream.flatMap(CodeStream.map(outer)(inner))
+        CodeStream.forEach[Code[Int]](z, i => Code._println(i.toS), ret(()))
+      }
+    }
+    f(10)
   }
 
   @Test def testES2FlatMap() {
     val f = compile1[Int, Unit] { (mb, n) =>
       JoinPoint.CallCC[Unit] { (jpb, ret) =>
         implicit val ctx = EmitStreamContext(mb, jpb)
-        val r = range(0, n, "outer")
-        def f(i: Code[Int]): CodeStream.Src[Code[Int]] = range(0, i, "inner")
+        val r = range(1, n, "outer")
+        def f(i: Code[Int]): CodeStream.Stream[Code[Int]] = range(0, i, "inner")
         val m = CodeStream.map(r)(f)
         val fm = CodeStream.flatMap(m)
-        val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
-        CodeStream.cut(fm, p)
+        CodeStream.forEach[Code[Int]](fm, i => Code._println(i.toS), ret(()))
       }
     }
     f(10)
@@ -97,8 +148,7 @@ class EmitStreamSuite extends HailSuite {
         val fm = CodeStream.flatMap(CodeStream.map(r)(f))
 
         val z = CodeStream.zip(l, fm)
-        val p = CodeStream.forEach[(Code[Int], Code[Int])](x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
-        CodeStream.cut(z, p)
+        CodeStream.forEach[(Code[Int], Code[Int])](z, x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
       }
     }
     f(11, 10)
@@ -111,8 +161,7 @@ class EmitStreamSuite extends HailSuite {
         val r = range(0, n, "source")
         def cond(i: Code[Int]): Code[Boolean] = (i % 2).ceq(0)
         val f = CodeStream.filter(r, cond)
-        val p = CodeStream.forEach[Code[Int]](i => Code._println(i.toS), ret(()))
-        CodeStream.cut(f, p)
+        CodeStream.forEach[Code[Int]](f, i => Code._println(i.toS), ret(()))
       }
     }
     f(10)

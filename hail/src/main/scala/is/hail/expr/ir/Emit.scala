@@ -303,7 +303,7 @@ private class Emit(
     emit(ir, env, er, container, None)
 
   private def emit(ir: IR, env: E, er: EmitRegion, container: Option[AggContainer], loopEnv: Option[Env[Array[LoopRef]]]): EmitTriplet = {
-    import CodeStream.Src
+    import CodeStream.Stream
 
     def emit(ir: IR, env: E = env, er: EmitRegion = er, container: Option[AggContainer] = container, loopEnv: Option[Env[Array[LoopRef]]] = loopEnv): EmitTriplet =
       this.emit(ir, env, er, container, loopEnv)
@@ -313,7 +313,7 @@ private class Emit(
 
     def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) = this.emitArrayIterator(ir, env, er, container)
 
-    def emitStream2(ir: IR, ctx: EmitStreamContext, env: E = env, container: Option[AggContainer] = container): COption[Src[COption[_]]] =
+    def emitStream2(ir: IR, ctx: EmitStreamContext, env: E = env, container: Option[AggContainer] = container): COption[Stream[COption[_]]] =
       EmitStream2(this, Streamify(ir), env, er, container)(ctx)
 
     def emitDeforestedNDArray(ir: IR) =
@@ -733,7 +733,7 @@ private class Emit(
 
           val resOpt = new COption[Code[accType.type]] {
             def apply(none: Code[Ctrl], some: Code[accType.type] => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
-              val streamOpt = emitStream2(a, ctx).asInstanceOf[COption[Src[COption[Code[eltType.type]]]]]
+              val streamOpt = emitStream2(a, ctx).asInstanceOf[COption[Stream[COption[Code[eltType.type]]]]]
               streamOpt.apply(
                 none = none,
                 some = stream => {
@@ -750,9 +750,9 @@ private class Emit(
                   val codeZ = emit(zero)
                   def ret(acc: TypedTriplet[accType.type]): Code[Ctrl] =
                     acc.m.mux(none, some(coerce[accType.type](acc.v)))
-                  val sink = CodeStream.fold[TypedTriplet[eltType.type], TypedTriplet[accType.type]](
+                  CodeStream.fold[TypedTriplet[eltType.type], TypedTriplet[accType.type]](
+                    CodeStream.map(stream)(COption.toTypedTriplet(eltType, mb)(_)),
                     TypedTriplet(accType, codeZ), foldBody, ret)
-                  CodeStream.cut(CodeStream.map(stream)(COption.toTypedTriplet(eltType, mb)(_)), sink)
                 })
             }
           }

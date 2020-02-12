@@ -62,7 +62,8 @@ object CodeStream { self =>
   type Bot = Code[Ctrl]
 
   def newLocal[T: ParameterPack](implicit ctx: EmitStreamContext): ParameterStore[T] = implicitly[ParameterPack[T]].newLocals(ctx.mb)
-  def joinPoint(implicit ctx: EmitStreamContext): DefinableJoinPoint[Unit] = ctx.jb.joinPoint()
+  def joinPoint()(implicit ctx: EmitStreamContext): DefinableJoinPoint[Unit] = ctx.jb.joinPoint()
+  def joinPoint[T: ParameterPack](implicit ctx: EmitStreamContext): DefinableJoinPoint[T] = ctx.jb.joinPoint[T](ctx.mb)
 
   private case class Source[A](setup0: Eff, close0: Eff, setup: Eff, close: Eff, firstPull: Option[Bot], pull: Bot)
   case class Sink[A](eos: Bot, push: A => Bot)
@@ -94,7 +95,7 @@ object CodeStream { self =>
       val i = newLocal[Code[Int]]
       val rem = newLocal[Code[Int]]
       val xStep = newLocal[Code[Int]]
-      val pull = joinPoint
+      val pull = joinPoint()
       pull.define(_ => (rem.load >= 0).mux(push(i.load), eos))
       Source[Code[Int]](
         setup0 = Code(i.init, rem.init, xStep.init),
@@ -119,8 +120,8 @@ object CodeStream { self =>
 
   def fold[A, S: ParameterPack](stream: Stream[A], s0: S, f: (A, S) => S, ret: S => Bot)(implicit ctx: EmitStreamContext): Bot = {
     val s = newLocal[S]
-    val pullJP = joinPoint
-    val eosJP = joinPoint
+    val pullJP = joinPoint()
+    val eosJP = joinPoint()
     def push(a: A) = Code(s := f(a, s.load), pullJP(()))
     val source = stream(eosJP(()), push)
     eosJP.define(_ => Code(source.close0, ret(s.load)))
@@ -129,8 +130,8 @@ object CodeStream { self =>
   }
 
   def forEach[A](stream: Stream[A], f: A => Code[Unit], ret: Bot)(implicit ctx: EmitStreamContext): Bot = {
-    val pullJP = joinPoint
-    val eosJP = joinPoint
+    val pullJP = joinPoint()
+    val eosJP = joinPoint()
     def push(a: A) = Code(f(a), pullJP(()))
     val source = stream(eosJP(()), push)
     eosJP.define(_ => Code(source.close0, ret))
@@ -172,7 +173,7 @@ object CodeStream { self =>
 
   def flatMap[A](src: Stream[Stream[A]])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
     def apply(eos: Bot, push: A => Bot): Source[A] = {
-      val outerPullJP = joinPoint
+      val outerPullJP = joinPoint()
       var innerSource: Option[Source[A]] = None
       val outerSource = src(
         eos = eos,
@@ -184,7 +185,7 @@ object CodeStream { self =>
           is.firstPull match {
             case Some(fp) => Code(is.setup, fp)
             case None =>
-              val innerPullJP = joinPoint
+              val innerPullJP = joinPoint()
               innerPullJP.define(_ => is.pull)
               innerSource = Some(is.copy(pull = innerPullJP(())))
               Code(is.setup, innerPullJP(()))
@@ -207,7 +208,7 @@ object CodeStream { self =>
 
   def filter[A](src: Stream[COption[A]])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
     def apply(eos: Bot, push: A => Bot): Source[A] = {
-      val pullJP = joinPoint
+      val pullJP = joinPoint()
       val source = src(
         eos = eos,
         push = _.apply(none = pullJP(()), some = push))
@@ -222,11 +223,11 @@ object CodeStream { self =>
       Code(as := a, k(COption(!cond(as.load), as.load)))
     }))
 
-  def zip[A: ParameterPack, B](left: Stream[A], right: Stream[B])(implicit ctx: EmitStreamContext): Stream[(A, B)] = new Stream[(A, B)] {
+  def zip[A, B](left: Stream[A], right: Stream[B])(implicit ctx: EmitStreamContext): Stream[(A, B)] = new Stream[(A, B)] {
     def apply(eos: Bot, push: ((A, B)) => Bot): Source[(A, B)] = {
-      val eosJP = joinPoint
-      val leftEOSJP = joinPoint
-      val rightEOSJP = joinPoint
+      val eosJP = joinPoint()
+      val leftEOSJP = joinPoint()
+      val rightEOSJP = joinPoint()
       var pulledRight: ParameterStore[Code[Boolean]] = null
       var rightSource: Option[Source[B]] = None
       val leftSource = left(
@@ -267,6 +268,37 @@ object CodeStream { self =>
               firstPull = leftSource.firstPull,
               pull = leftSource.pull)
       }
+    }
+  }
+
+  def mux[A: ParameterPack](cond: Code[Boolean], left: Stream[A], right: Stream[A])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
+    def apply(eos: Bot, push: A => Bot): Source[A] = {
+      val b = newLocal[Code[Boolean]]
+      val eosJP = joinPoint()
+      val pushJP = joinPoint[A]
+
+      eosJP.define(_ => eos)
+      pushJP.define(push)
+
+      val l = left(eosJP(()), pushJP(_))
+      val r = right(eosJP(()), pushJP(_))
+
+      val lPullJP = joinPoint()
+      val rPullJP = joinPoint()
+
+      lPullJP.define(_ => l.pull)
+      rPullJP.define(_ => r.pull)
+      Source[A](
+        setup0 = Code(b := cond, l.setup0, r.setup0),
+        close0 = Code(l.close0, r.close0),
+        setup = b.load.mux(l.setup, r.setup),
+        close = b.load.mux(l.close, r.close),
+        firstPull = (l.firstPull, r.firstPull) match {
+          case (None, None) => None
+          case _ => Some(b.load.mux(l.firstPull.getOrElse(lPullJP(())), r.firstPull.getOrElse(rPullJP(()))))
+        },
+        pull = JoinPoint.mux(b.load, lPullJP, rPullJP)
+      )
     }
   }
 

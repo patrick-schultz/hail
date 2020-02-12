@@ -167,6 +167,33 @@ class EmitStreamSuite extends HailSuite {
     f(10)
   }
 
+  @Test def testES2Mux() {
+    val f = compile2[Boolean, Int, Unit] { (mb, cond, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStreamContext(mb, jpb)
+        val l = range(0, n, "left")
+        val r = range(0, n, "right")
+        val mux = CodeStream.mux(cond, l, r)
+        CodeStream.forEach[Code[Int]](mux, i => Code._println(i.toS), ret(()))
+      }
+    }
+    f(false, 10)
+  }
+
+  @Test def testES2ZipMux() {
+    val f = compile2[Boolean, Int, Unit] { (mb, cond, n) =>
+      JoinPoint.CallCC[Unit] { (jpb, ret) =>
+        implicit val ctx = EmitStreamContext(mb, jpb)
+        val l1 = range(0, n, "left1")
+        val l2 = range(0, n, "left2")
+        val mux = CodeStream.mux(cond, l1, l2)
+        val r = range(0, n, "right")
+        val z = CodeStream.zip(mux, r)
+        CodeStream.forEach[(Code[Int], Code[Int])](z, x => Code._println(const("(").concat(x._1.toS).concat(", ").concat(x._2.toS).concat(")")), ret(()))
+      }
+    }
+    f(false, 10)
+  }
 
   @Test def testES2Fac() {
     def fac(n: Int): Int = (1 to n).fold(1)(_ * _)

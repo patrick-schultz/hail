@@ -52,7 +52,7 @@ class EmitStreamSuite extends HailSuite {
         CodeStream.forEach[Code[Int]](r, i => Code._println(i.toS), ret(()))
       }
     }
-    f(2)
+    f(5)
   }
 
   @Test def testES2Zip() {

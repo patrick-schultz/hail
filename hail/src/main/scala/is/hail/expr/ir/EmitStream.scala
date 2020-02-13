@@ -71,7 +71,11 @@ object CodeStream { self =>
     private[CodeStream] def apply(eos: Bot, push: A => Bot): Source[A]
   }
 
-  def unfold[A, S: ParameterPack](s0: S, f: S => COption[(A, S)])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
+  def unfold[A, S: ParameterPack](
+    s0: S,
+    f: (S, COption[(A, S)] => Bot) => Bot
+  )(implicit ctx: EmitStreamContext
+  ): Stream[A] = new Stream[A] {
     def apply(eos: Bot, push: A => Bot): Source[A] = {
       val s = newLocal[S]
       Source[A](
@@ -80,32 +84,22 @@ object CodeStream { self =>
         setup = s := s0,
         close = Code._empty,
         firstPull = None,
-        pull = f(s.load).apply(
+        pull = f(s.load, _.apply(
           none = eos,
           // this behaves unexpectedly if a depends on s in f
-          some = { case (a, s1) => Code(s := s1, push(a)) }))
+          some = { case (a, s1) => Code(s := s1, push(a)) })))
     }
   }
 
   def range(start: Code[Int], step: Code[Int], len: Code[Int]
   )(implicit ctx: EmitStreamContext
-  ): Stream[Code[Int]] = new Stream[Code[Int]] {
-    def apply(eos: Bot, push: Code[Int] => Bot): Source[Code[Int]] = {
-      val i = newLocal[Code[Int]]
-      val rem = newLocal[Code[Int]]
-      val xStep = newLocal[Code[Int]]
-      Source[Code[Int]](
-        setup0 = Code(i.init, rem.init, xStep.init),
-        close0 = Code._empty,
-        setup = Code(rem := len, xStep := step, i := start - xStep.load),
-        close = Code._empty,
-        firstPull = None,
-        pull = Code(
-          i := i.load + xStep.load,
-          rem := rem.load - 1,
-          (rem.load >= 0).mux(push(i.load), eos)))
-    }
-  }
+  ): Stream[Code[Int]] = unfold[Code[Int], (Code[Int], Code[Int])](
+    s0 = (start, len),
+    f = { case ((cur, rem), k) =>
+      val xCur = newLocal[Code[Int]]
+      val xRem = newLocal[Code[Int]]
+      Code(xCur := cur, xRem := rem - 1, k(COption(xRem.load < 0, (xCur.load, (xCur.load + 1, xRem.load)))))
+    })
 
   def empty[A]: Stream[A] = new Stream[A] {
     def apply(eos: Bot, push: A => Bot): Source[A] =
@@ -200,7 +194,7 @@ object CodeStream { self =>
           Source[A](
             setup0 = Code(outerSource.setup0, is.setup0),
             close0 = Code(is.close0, outerSource.close0),
-            setup = Code(outerSource.setup, is.setup),
+            setup = outerSource.setup,
             close = Code(is.close, outerSource.close),
             firstPull = outerSource.firstPull,
             pull = is.pull)

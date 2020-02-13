@@ -40,9 +40,9 @@ object COption {
     def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = missing.mux(none, some(value))
   }
   def some[A](value: A): COption[A] = new CSome(value)
-  def fromEmitTriplet[A](et: TypedTriplet[A]): COption[Code[A]] = new COption[Code[A]] {
+  def fromEmitTriplet[A](et: EmitTriplet): COption[Code[A]] = new COption[Code[A]] {
     def apply(none: Code[Ctrl], some: Code[A] => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
-      et.m.mux(none, some(coerce[A](et.v)))
+      Code(et.setup, et.m.mux(none, some(coerce[A](et.v))))
     }
   }
   def toEmitTriplet[A: TypeInfo](opt: COption[Code[A]], mb: MethodBuilder): EmitTriplet = {
@@ -66,7 +66,6 @@ object CodeStream { self =>
   def joinPoint[T: ParameterPack](implicit ctx: EmitStreamContext): DefinableJoinPoint[T] = ctx.jb.joinPoint[T](ctx.mb)
 
   private case class Source[+A](setup0: Eff, close0: Eff, setup: Eff, close: Eff, firstPull: Option[Bot], pull: Bot)
-  case class Sink[A](eos: Bot, push: A => Bot)
 
   abstract class Stream[+A] {
     private[CodeStream] def apply(eos: Bot, push: A => Bot): Source[A]
@@ -95,15 +94,16 @@ object CodeStream { self =>
       val i = newLocal[Code[Int]]
       val rem = newLocal[Code[Int]]
       val xStep = newLocal[Code[Int]]
-      val pull = joinPoint()
-      pull.define(_ => (rem.load >= 0).mux(push(i.load), eos))
       Source[Code[Int]](
         setup0 = Code(i.init, rem.init, xStep.init),
         close0 = Code._empty,
         setup = Code(rem := len, xStep := step, i := start - xStep.load),
         close = Code._empty,
         firstPull = None,
-        pull = Code(i := i.load + xStep.load, rem := rem.load - 1, pull(())))
+        pull = Code(
+          i := i.load + xStep.load,
+          rem := rem.load - 1,
+          (rem.load >= 0).mux(push(i.load), eos)))
     }
   }
 
@@ -122,8 +122,9 @@ object CodeStream { self =>
     val s = newLocal[S]
     val pullJP = joinPoint()
     val eosJP = joinPoint()
-    def push(a: A) = Code(s := f(a, s.load), pullJP(()))
-    val source = stream(eosJP(()), push)
+    val source = stream(
+      eos = eosJP(()),
+      push = a => Code(s := f(a, s.load), pullJP(())))
     eosJP.define(_ => Code(source.close0, ret(s.load)))
     pullJP.define(_ => source.pull)
     Code(s := s0, source.setup0, source.setup, source.firstPull.getOrElse(pullJP(())))
@@ -132,8 +133,9 @@ object CodeStream { self =>
   def forEach[A](stream: Stream[A], f: A => Code[Unit], ret: Bot)(implicit ctx: EmitStreamContext): Bot = {
     val pullJP = joinPoint()
     val eosJP = joinPoint()
-    def push(a: A) = Code(f(a), pullJP(()))
-    val source = stream(eosJP(()), push)
+    val source = stream(
+      eos = eosJP(()),
+      push = a => Code(f(a), pullJP(())))
     eosJP.define(_ => Code(source.close0, ret))
     pullJP.define(_ => source.pull)
     Code(source.setup0, source.setup, source.firstPull.getOrElse(pullJP(())))
@@ -178,7 +180,7 @@ object CodeStream { self =>
       val outerSource = src(
         eos = eos,
         push = innerSrc => {
-          val is =innerSrc(
+          val is = innerSrc(
             eos = outerPullJP(()),
             push = push)
           innerSource = Some(is)
@@ -450,7 +452,7 @@ object EmitStream2 {
           val EmitStream(parameterized, eltType) =
             EmitStream.apply(emitter, streamIR, env, er, container)
           val optSrc = fromParameterized(parameterized)(())
-          optSrc.map(src => CodeStream.map(src)(opt => COption.fromEmitTriplet(TypedTriplet(eltType, opt))))
+          optSrc.map(src => CodeStream.map(src)(opt => COption.fromEmitTriplet(opt)))
       }
 
     emitStream(streamIR0, env0)

@@ -21,11 +21,24 @@ abstract class COption[A] { self =>
       self.apply(none, a => some(f(a)))
   }
 
+  def mapCPS[B](f: (A, B => Code[Ctrl]) => Code[Ctrl]): COption[B] =  new COption[B] {
+    def apply(none: Code[Ctrl], some: B => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] =
+      self.apply(none, a => f(a, some))
+  }
+
   def flatMap[B](f: A => COption[B]): COption[B] = new COption[B] {
     def apply(none: Code[Ctrl], some: B => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
       val noneJP = ctx.jb.joinPoint()
       noneJP.define(_ => none)
       self.apply(noneJP(()), f(_)(noneJP(()), some))
+    }
+  }
+
+  def flatMapCPS[B](f: (A, EmitStreamContext, COption[B] => Code[Ctrl]) => Code[Ctrl]): COption[B] = new COption[B] {
+    def apply(none: Code[Ctrl], some: B => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
+      val noneJP = ctx.jb.joinPoint()
+      noneJP.define(_ => none)
+      self.apply(noneJP(()), a => f(a, ctx, optB => optB(noneJP(()), some)))
     }
   }
 }
@@ -58,6 +71,8 @@ object COption {
 }
 
 object CodeStream { self =>
+  import is.hail.asm4s.joinpoint.JoinPoint.CallCC
+  import is.hail.asm4s.joinpoint._
   type Eff = Code[Unit]
   type Bot = Code[Ctrl]
 
@@ -69,6 +84,34 @@ object CodeStream { self =>
 
   abstract class Stream[+A] {
     private[CodeStream] def apply(eos: Bot, push: A => Bot): Source[A]
+
+    def fold[S: ParameterPack](s0: S, f: (A, S) => S, ret: S => Bot)(implicit ctx: EmitStreamContext): Bot =
+      CodeStream.fold(this, s0, f, ret)
+    def forEach(f: A => Code[Unit], ret: Bot)(implicit ctx: EmitStreamContext): Bot =
+      CodeStream.forEach(this, f, ret)
+    def forEach(mb: MethodBuilder)(f: A => Code[Unit]): Code[Unit] =
+      CallCC[Unit]((jb, ret) => CodeStream.forEach(this, f, ret(()))(EmitStreamContext(mb, jb)))
+    def mapCPS[B](
+      f: (A, B => Bot) => Bot,
+      setup0: Option[Code[Unit]] = None,
+      setup:  Option[Code[Unit]] = None,
+      close0: Option[Code[Unit]] = None,
+      close:  Option[Code[Unit]] = None
+    ): Stream[B] = CodeStream.mapCPS(this)(f, setup0, setup, close0, close)
+    def map[B](
+      f: A => B,
+      setup0: Option[Code[Unit]] = None,
+      setup:  Option[Code[Unit]] = None,
+      close0: Option[Code[Unit]] = None,
+      close:  Option[Code[Unit]] = None
+    ): Stream[B] = CodeStream.map(this)(f, setup0, setup, close0, close)
+    def flatMap[B](f: A => Stream[B])(implicit ctx: EmitStreamContext): Stream[B] =
+      CodeStream.flatMap(map(f))
+  }
+
+  implicit class StreamPP[A: ParameterPack](val stream: Stream[A]) extends AnyVal {
+    def filter(cond: A => Code[Boolean])(implicit ctx: EmitStreamContext): Stream[A] =
+      CodeStream.filter(stream, cond)
   }
 
   def unfold[A, S: ParameterPack](
@@ -135,7 +178,7 @@ object CodeStream { self =>
     Code(source.setup0, source.setup, source.firstPull.getOrElse(pullJP(())))
   }
 
-  def mapCPS[A, B](srcA: Stream[A])(
+  def mapCPS[A, B](stream: Stream[A])(
     f: (A, B => Bot) => Bot,
     setup0: Option[Code[Unit]] = None,
     setup:  Option[Code[Unit]] = None,
@@ -143,35 +186,35 @@ object CodeStream { self =>
     close:  Option[Code[Unit]] = None
   ): Stream[B] = new Stream[B] {
     def apply(eos: Bot, push: B => Bot): Source[B] = {
-      val sourceA = srcA(
+      val source = stream(
         eos = close.map(Code(_, eos)).getOrElse(eos),
         push = f(_, b => push(b)))
       Source[B](
-        setup0 = setup0.map(Code(_, sourceA.setup0)).getOrElse(sourceA.setup0),
-        close0 = close0.map(Code(_, sourceA.close0)).getOrElse(sourceA.close0),
-        setup = setup.map(Code(_, sourceA.setup)).getOrElse(sourceA.setup),
-        close = close.map(Code(_, sourceA.close)).getOrElse(sourceA.close),
-        firstPull = sourceA.firstPull,
-        pull = sourceA.pull)
+        setup0 = setup0.map(Code(_, source.setup0)).getOrElse(source.setup0),
+        close0 = close0.map(Code(_, source.close0)).getOrElse(source.close0),
+        setup = setup.map(Code(_, source.setup)).getOrElse(source.setup),
+        close = close.map(Code(_, source.close)).getOrElse(source.close),
+        firstPull = source.firstPull,
+        pull = source.pull)
     }
   }
 
-  def map[A, B](srcA: Stream[A])(
+  def map[A, B](stream: Stream[A])(
     f: A => B,
     setup0: Option[Code[Unit]] = None,
     setup:  Option[Code[Unit]] = None,
     close0: Option[Code[Unit]] = None,
     close:  Option[Code[Unit]] = None
-  ): Stream[B] = mapCPS(srcA)((a, k) => k(f(a)), setup0, setup, close0, close)
+  ): Stream[B] = mapCPS(stream)((a, k) => k(f(a)), setup0, setup, close0, close)
 
-  def addFinalizer[A](src: Stream[A])(finalize: Code[Unit]): Stream[A] =
-    map[A, A](src)(a => a, close = Some(finalize))
+  def addFinalizer[A](stream: Stream[A])(finalize: Code[Unit]): Stream[A] =
+    map[A, A](stream)(a => a, close = Some(finalize))
 
-  def flatMap[A](src: Stream[Stream[A]])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
+  def flatMap[A](outer: Stream[Stream[A]])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
     def apply(eos: Bot, push: A => Bot): Source[A] = {
       val outerPullJP = joinPoint()
       var innerSource: Option[Source[A]] = None
-      val outerSource = src(
+      val outerSource = outer(
         eos = eos,
         push = innerSrc => {
           val is = innerSrc(
@@ -202,10 +245,10 @@ object CodeStream { self =>
     }
   }
 
-  def filter[A](src: Stream[COption[A]])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
+  def filter[A](stream: Stream[COption[A]])(implicit ctx: EmitStreamContext): Stream[A] = new Stream[A] {
     def apply(eos: Bot, push: A => Bot): Source[A] = {
       val pullJP = joinPoint()
-      val source = src(
+      val source = stream(
         eos = eos,
         push = _.apply(none = pullJP(()), some = push))
       pullJP.define(_ => source.pull)
@@ -213,8 +256,8 @@ object CodeStream { self =>
     }
   }
 
-  def filter[A: ParameterPack](src: Stream[A], cond: A => Code[Boolean])(implicit ctx: EmitStreamContext): Stream[A] =
-    filter(mapCPS[A, COption[A]](src)((a, k) => {
+  def filter[A: ParameterPack](stream: Stream[A], cond: A => Code[Boolean])(implicit ctx: EmitStreamContext): Stream[A] =
+    filter(mapCPS[A, COption[A]](stream)((a, k) => {
       val as = newLocal[A]
       Code(as := a, k(COption(!cond(as.load), as.load)))
     }))
@@ -381,25 +424,6 @@ object CodeStream { self =>
 
 object EmitStream2 {
   import CodeStream._
-//  case class Parameterized[P, A](initSrc: P => COption[Src[A]]) {
-
-//    def guardParam[Q](
-//      f: (Q, Option[P] => Code[Ctrl]) => Code[Ctrl],
-//      cleanup: Code[Unit] = Code._empty
-//    ): Parameterized[Q, A] = Parameterized[Q, A] { q => new COption[Src[A]] {
-//      def apply(none: Bot, some: Src[A] => Bot): Bot = {
-//        f(q, {
-//          case None => none
-//          case Some(p) =>
-//            initSrc(p)(
-//              none,
-//              src => some(addFinalizer(src)(cleanup))
-//            )
-//        })
-//      }
-//    }
-//    }
-//  }
 
   private[ir] def apply(
     emitter: Emit,

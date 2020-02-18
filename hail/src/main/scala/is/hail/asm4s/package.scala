@@ -10,6 +10,7 @@ import scala.reflect.ClassTag
 
 package asm4s {
   trait TypeInfo[T] {
+    type Dyn = T
     val name: String
     val iname: String = name
     def loadOp: Int

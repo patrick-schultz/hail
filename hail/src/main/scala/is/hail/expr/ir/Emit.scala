@@ -313,8 +313,8 @@ private class Emit(
 
     def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) = this.emitArrayIterator(ir, env, er, container)
 
-    def emitStream2(ir: IR, ctx: EmitStreamContext, env: E = env, container: Option[AggContainer] = container): COption[Stream[COption[_]]] =
-      EmitStream2(this, Streamify(ir), env, er, container)(ctx)
+    def emitStream2(ir: IR, env: E = env, container: Option[AggContainer] = container): COption[Stream[COption[Code[_]]]] =
+      EmitStream2(this, Streamify(ir), env, er, container)
 
     def emitDeforestedNDArray(ir: IR) =
       deforestNDArray(resultRegion, ir, env).emit(coerce[PNDArray](ir.pType))
@@ -729,10 +729,11 @@ private class Emit(
           implicit val eltPack = TypedTriplet.pack(eltType)
           implicit val accPack = TypedTriplet.pack(accType)
           val accTI = typeToTypeInfo(accType)
-          val eltTI: TypeInfo[eltType.type] = typeToTypeInfo(eltType).asInstanceOf[TypeInfo[eltType.type]]
+          val eltTI = typeToTypeInfo(eltType)
 
-          val resOpt2 = streamOpt.flatMapCPS { (stream, ctx, ret) =>
-            val streamOpt = emitStream2(a, ctx).asInstanceOf[COption[Stream[COption[Code[eltType.type]]]]]
+          val streamOpt = emitStream2(a).asInstanceOf[COption[Stream[COption[Code[eltTI.Dyn]]]]]
+          val resOpt: COption[Code[accTI.Dyn]] = streamOpt.flatMapCPS[Code[accTI.Dyn]] { (stream, _ctx, ret) =>
+            implicit val c = _ctx
             def foldBody(elt: TypedTriplet[eltType.type], acc: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
               val xElt = eltPack.newLocals(mb)
               val xAcc = accPack.newLocals(mb)
@@ -745,13 +746,13 @@ private class Emit(
             }
             val codeZ = emit(zero)
             def retTT(acc: TypedTriplet[accType.type]): Code[Ctrl] =
-              ret(COption.fromEmitTriplet(acc))
+              ret(COption.fromEmitTriplet(acc.untyped))
 
-            stream.map(COption.toTypedTriplet(eltType, mb))
+            stream.map(COption.toTypedTriplet(eltType, mb, _))
                   .fold(TypedTriplet(accType, codeZ), foldBody, retTT)
           }
 
-          COption.toEmitTriplet(resOpt, mb)
+          COption.toEmitTriplet[accTI.Dyn](resOpt, mb)(accTI.asInstanceOf[TypeInfo[accTI.Dyn]])
         } catch {
           case _: Throwable =>
             val typ = ir.typ

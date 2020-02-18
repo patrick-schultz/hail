@@ -13,8 +13,8 @@ import org.apache.spark.sql.Row
 import org.testng.annotations.Test
 
 class EmitStreamSuite extends HailSuite {
-  private def compile1[T: TypeInfo, R: TypeInfo](f: (MethodBuilder, Code[T]) => Code[R]): T => R = {
-    val fb = FunctionBuilder.functionBuilder[T, R]
+  private def compile1[T: TypeInfo, R: TypeInfo](f: (EmitMethodBuilder, Code[T]) => Code[R]): T => R = {
+    val fb = EmitFunctionBuilder[T, R]("stream_test")
     val mb = fb.apply_method
     mb.emit(f(mb, mb.getArg[T](1)))
     val asmFn = fb.result()()

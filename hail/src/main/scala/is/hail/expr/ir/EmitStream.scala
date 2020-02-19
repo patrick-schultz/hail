@@ -16,6 +16,9 @@ case class EmitStreamContext(mb: MethodBuilder, jb: JoinPointBuilder)
 abstract class COption[+A] { self =>
   def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl]
 
+  def cases[B: TypeInfo](mb: MethodBuilder)(none: Code[B], some: A => Code[B]): Code[B] =
+    JoinPoint.CallCC[Code[B]]((jb, ret) => apply(ret(none), a => ret(some(a)))(EmitStreamContext(mb, jb)))
+
   def map[B](f: A => B): COption[B] = new COption[B] {
     def apply(none: Code[Ctrl], some: B => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] =
       self.apply(none, a => some(f(a)))
@@ -42,33 +45,27 @@ abstract class COption[+A] { self =>
     }
   }
 }
-class CNone[A] extends COption[A] {
-  def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = none
-}
-class CSome[A](a: A) extends COption[A] {
-  def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = some(a)
-}
 object COption {
   def apply[A](missing: Code[Boolean], value: A): COption[A] = new COption[A] {
     def apply(none: Code[Ctrl], some: A => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = missing.mux(none, some(value))
   }
-  def some[A](value: A): COption[A] = new CSome(value)
   def fromEmitTriplet[A](et: EmitTriplet): COption[Code[A]] = new COption[Code[A]] {
     def apply(none: Code[Ctrl], some: Code[A] => Code[Ctrl])(implicit ctx: EmitStreamContext): Code[Ctrl] = {
       Code(et.setup, et.m.mux(none, some(coerce[A](et.v))))
     }
   }
   def fromTypedTriplet(et: EmitTriplet, ti: TypeInfo[_]): COption[Code[ti.Dyn]] = fromEmitTriplet[ti.Dyn](et)
-  def toEmitTriplet[A: TypeInfo](opt: COption[Code[A]], mb: MethodBuilder): EmitTriplet = {
+  def toEmitTriplet(opt: COption[Code[_]], ti: TypeInfo[_], mb: MethodBuilder): EmitTriplet = {
     val m = mb.newLocal[Boolean]
-    val v = mb.newLocal[A]
+    val v = mb.newLocal(ti)
     val setup = JoinPoint.CallCC[Unit] { (jb, ret) =>
-      opt(Code(m := true, v := Code.defaultValue[A], ret(())), a => Code(m := false, v := a, ret(())))(EmitStreamContext(mb, jb))
+      opt(Code(m := true, v.storeAny(ti.defaultValue), ret(())),
+          a => Code(m := false, v.storeAny(a), ret(())))(EmitStreamContext(mb, jb))
     }
     EmitTriplet(setup, m, v.load())
   }
   def toTypedTriplet[A](t: PType, mb: MethodBuilder, opt: COption[Code[A]]): TypedTriplet[t.type] =
-    TypedTriplet(t, toEmitTriplet(opt, mb)(typeToTypeInfo(t).asInstanceOf[TypeInfo[A]]))
+    TypedTriplet(t, toEmitTriplet(opt, typeToTypeInfo(t), mb))
 }
 
 object CodeStream { self =>
@@ -432,13 +429,13 @@ object EmitStream2 {
     env0: Emit.E,
     er: EmitRegion,
     container: Option[AggContainer]
-  ): COption[Stream[COption[Code[_]]]] = {
+  ): COption[Stream[EmitTriplet]] = {
     val fb = emitter.mb.fb
 
     def emitIR(ir: IR, env: Emit.E): EmitTriplet =
       emitter.emit(ir, env, er, container)
 
-    def emitStream(streamIR: IR, env: Emit.E): COption[Stream[COption[Code[_]]]] =
+    def emitStream(streamIR: IR, env: Emit.E): COption[Stream[EmitTriplet]] =
       streamIR match {
 //        case NA(_) => new CNone[Src[COption[_]]]
 //        case StreamRange(startIR, stopIR, stepIR) => new COption[Src[COption[_]]] {
@@ -470,9 +467,7 @@ object EmitStream2 {
         case _ =>
           val EmitStream(parameterized, eltType) =
             EmitStream.apply(emitter, streamIR, env, er, container)
-          val optSrc = fromParameterized(parameterized)(())
-          val ti = typeToTypeInfo(eltType)
-          optSrc.map(src => CodeStream.map(src)(opt => COption.fromEmitTriplet(opt)))
+          fromParameterized(parameterized)(())
       }
 
     emitStream(streamIR0, env0)

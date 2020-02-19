@@ -313,7 +313,7 @@ private class Emit(
 
     def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) = this.emitArrayIterator(ir, env, er, container)
 
-    def emitStream2(ir: IR, env: E = env, container: Option[AggContainer] = container): COption[Stream[COption[Code[_]]]] =
+    def emitStream2(ir: IR, env: E = env, container: Option[AggContainer] = container): COption[Stream[EmitTriplet]] =
       EmitStream2(this, Streamify(ir), env, er, container)
 
     def emitDeforestedNDArray(ir: IR) =
@@ -723,83 +723,35 @@ private class Emit(
         emitArrayIterator(ir).toEmitTriplet(mb, PArray(coerce[PStreamable](ir.pType).elementType))
 
       case ArrayFold(a, zero, accumName, valueName, body) =>
-        try {
-          val eltType = a.pType.asInstanceOf[PStreamable].elementType
-          val accType = ir.pType
-          implicit val eltPack = TypedTriplet.pack(eltType)
-          implicit val accPack = TypedTriplet.pack(accType)
-          val accTI = typeToTypeInfo(accType)
-          val eltTI = typeToTypeInfo(eltType)
+        val eltType = a.pType.asInstanceOf[PStreamable].elementType
+        val accType = ir.pType
+        implicit val eltPack = TypedTriplet.pack(eltType)
+        implicit val accPack = TypedTriplet.pack(accType)
+        val accTI = typeToTypeInfo(accType)
+        val eltTI = typeToTypeInfo(eltType)
 
-          val streamOpt = emitStream2(a).asInstanceOf[COption[Stream[COption[Code[eltTI.Dyn]]]]]
-          val resOpt: COption[Code[accTI.Dyn]] = streamOpt.flatMapCPS[Code[accTI.Dyn]] { (stream, _ctx, ret) =>
-            implicit val c = _ctx
-            def foldBody(elt: TypedTriplet[eltType.type], acc: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
-              val xElt = eltPack.newLocals(mb)
-              val xAcc = accPack.newLocals(mb)
-              val bodyenv = env.bind(
-                (accumName, (accTI, xAcc.load.m, xAcc.load.v)),
-                (valueName, (eltTI, xElt.load.m, xElt.load.v)))
-
-              val codeB = emit(body, env = bodyenv)
-              TypedTriplet(accType, EmitTriplet(Code(xElt := elt, xAcc := acc, codeB.setup), codeB.m, codeB.v))
-            }
-            val codeZ = emit(zero)
-            def retTT(acc: TypedTriplet[accType.type]): Code[Ctrl] =
-              ret(COption.fromEmitTriplet(acc.untyped))
-
-            stream.map(COption.toTypedTriplet(eltType, mb, _))
-                  .fold(TypedTriplet(accType, codeZ), foldBody, retTT)
-          }
-
-          COption.toEmitTriplet[accTI.Dyn](resOpt, mb)(accTI.asInstanceOf[TypeInfo[accTI.Dyn]])
-        } catch {
-          case _: Throwable =>
-            val typ = ir.typ
-            val tarray = coerce[TStreamable](a.typ)
-            val tti = typeToTypeInfo(typ)
-            val eti = typeToTypeInfo(tarray.elementType)
-            val xmv = mb.newField[Boolean](valueName + "_missing")
-            val xvv = coerce[Any](mb.newField(valueName)(eti))
-            val xmbody = mb.newField[Boolean](accumName + "_missing_tmp")
-            val xmaccum = mb.newField[Boolean](accumName + "_missing")
-            val xvaccum = coerce[Any](mb.newField(accumName)(tti))
+        val streamOpt = emitStream2(a)
+        val resOpt: COption[Code[_]] = streamOpt.flatMapCPS { (stream, _ctx, ret) =>
+          implicit val c = _ctx
+          def foldBody(elt: TypedTriplet[eltType.type], acc: TypedTriplet[accType.type]): TypedTriplet[accType.type] = {
+            val xElt = eltPack.newLocals(mb)
+            val xAcc = accPack.newLocals(mb)
             val bodyenv = env.bind(
-              (accumName, (tti, xmaccum.load(), xvaccum.load())),
-              (valueName, (eti, xmv.load(), xvv.load())))
+              (accumName, (accTI, xAcc.load.m, xAcc.load.v)),
+              (valueName, (eltTI, xElt.load.m, xElt.load.v)))
 
-            val codeZ = emit(zero)
             val codeB = emit(body, env = bodyenv)
+            TypedTriplet(accType, EmitTriplet(Code(xElt := elt, xAcc := acc, codeB.setup), codeB.m, codeB.v))
+          }
+          val codeZ = emit(zero)
+          def retTT(acc: TypedTriplet[accType.type]): Code[Ctrl] =
+            ret(COption.fromEmitTriplet(acc.untyped))
 
-            val aBase = emitArrayIterator(a)
-
-            val cont = { (m: Code[Boolean], v: Code[_]) =>
-              Code(
-                xmv := m,
-                xvv := xmv.mux(defaultValue(tarray.elementType), v),
-                codeB.setup,
-                xmbody := codeB.m,
-                xvaccum := xmbody.mux(defaultValue(typ), codeB.v),
-                xmaccum := xmbody)
-            }
-
-            val processAElts = aBase.arrayEmitter(cont)
-            val marray = processAElts.m.getOrElse(const(false))
-
-            EmitTriplet(Code(
-              codeZ.setup,
-              xmaccum := codeZ.m,
-              xvaccum := xmaccum.mux(defaultValue(typ), codeZ.v),
-              processAElts.setup,
-              marray.mux(
-                Code(
-                  xmaccum := true,
-                  xvaccum := defaultValue(typ)),
-                Code(
-                  aBase.calcLength,
-                  processAElts.addElements))),
-                        xmaccum, xvaccum)
+          stream.map(TypedTriplet(eltType, _))
+                .fold(TypedTriplet(accType, codeZ), foldBody, retTT)
         }
+
+        COption.toEmitTriplet(resOpt, accTI, mb)
 
       case ArrayFold2(a, acc, valueName, seq, res) =>
         val typ = ir.typ
@@ -862,29 +814,29 @@ private class Emit(
           xresm, xresv)
 
       case ArrayFor(a, valueName, body) =>
-        val tarray = coerce[TStreamable](a.typ)
-        val eti = typeToTypeInfo(tarray.elementType)
-        val xmv = mb.newField[Boolean]()
-        val xvv = coerce[Any](mb.newField(valueName)(eti))
-        val bodyenv = env.bind(
-          (valueName, (eti, xmv.load(), xvv.load())))
-        val codeB = emit(body, env = bodyenv)
-        val aBase = emitArrayIterator(a)
-        val cont = { (m: Code[Boolean], v: Code[_]) =>
+        val eltType = a.pType.asInstanceOf[PStreamable].elementType
+        implicit val eltPack = TypedTriplet.pack(eltType)
+        val eltTI = typeToTypeInfo(eltType)
+
+        val streamOpt = emitStream2(a)
+        def forBody(elt: TypedTriplet[eltType.type]): Code[Unit] = {
+          val xmv = mb.newField[Boolean]()
+          val xvv = coerce[Any](mb.newField(valueName)(eltTI))
+          val bodyenv = env.bind(
+            (valueName, (eltTI, xmv.load(), xvv.load())))
+          val codeB = emit(body, env = bodyenv)
           Code(
-            xmv := m,
-            xvv := xmv.mux(defaultValue(tarray.elementType), v),
+            elt.setup,
+            xmv := elt.m,
+            xvv := xmv.mux(defaultValue(eltType), elt.v),
             codeB.setup)
         }
 
-        val processAElts = aBase.arrayEmitter(cont)
-        val ma = processAElts.m.getOrElse(const(false))
         EmitTriplet(
-          Code(
-            processAElts.setup,
-            ma.mux(
-              Code._empty,
-              Code(aBase.calcLength, processAElts.addElements))),
+          streamOpt.cases[Unit](mb)(
+            Code._empty,
+            stream =>
+              stream.map(TypedTriplet(eltType, _)).forEach(mb)(forBody)),
           const(false),
           Code._empty)
 

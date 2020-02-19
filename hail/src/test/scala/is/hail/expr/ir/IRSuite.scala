@@ -393,7 +393,8 @@ class IRSuite extends HailSuite {
   }
 
   @Test def testComplexInferPType() {
-    var ir = ArrayMap(
+    // InferPType expects array->stream lowered ir
+    val ir = ToArray(ArrayMap(
       Let(
         "q",
         I32(2),
@@ -401,16 +402,16 @@ class IRSuite extends HailSuite {
           Let(
             "v",
             Ref("q", TInt32()) + I32(3),
-            ArrayRange(0, Ref("v", TInt32()), 1)
+            StreamRange(0, Ref("v", TInt32()), 1)
           ),
           "x",
           Ref("x", TInt32()) + Ref("q", TInt32())
         )
       ),
       "y",
-      Ref("y", TInt32()) + I32(3))
+      Ref("y", TInt32()) + I32(3)))
 
-    assertPType(ir, PArray(PInt32(true), true))
+    assertPType(ir, PCanonicalArray(PInt32(true), true))
   }
 
   @Test def testApplyBinaryPrimOpAdd() {
@@ -1929,6 +1930,72 @@ class IRSuite extends HailSuite {
     assertEvalsTo(makeNDArrayRef(mat2, FastIndexedSeq(0, 0)), 1.0)
   }
 
+  @Test def testNDArrayConcat() {
+    implicit val execStrats = ExecStrategy.compileOnly
+    def nds(ndData: (IndexedSeq[Int], Long, Long)*): IR = {
+      MakeArray(ndData.map { case (values, nRows, nCols) =>
+        if (values == null) NA(TNDArray(TInt32(), Nat(2))) else
+          MakeNDArray(Literal(TArray(TInt32()), values),
+            Literal(TTuple(TInt64(), TInt64()), Row(nRows, nCols)), True())
+      }, TArray(TNDArray(TInt32(), Nat(2))))
+    }
+
+    def assertNDEvals(nd: IR, expected: Array[Array[Int]]): Unit = {
+      val arrayIR = if (expected == null) nd else {
+        val nRows = expected.length
+        val nCols = if (nRows == 0) 0 else expected.head.length
+        Let("nd", nd,
+          MakeArray(
+            Array.tabulate(nRows) { i =>
+              MakeArray(Array.tabulate(nCols) { j =>
+                makeNDArrayRef(Ref("nd", nd.typ), FastIndexedSeq(i, j))
+              }, TArray(TInt32()))
+            }, TArray(TArray(TInt32()))))
+      }
+      assertEvalsTo(arrayIR, if (expected == null) null else expected.map(_.toFastIndexedSeq).toFastIndexedSeq)
+    }
+
+    val nd1 = (FastIndexedSeq(
+      0, 1, 2,
+      3, 4, 5), 2L, 3L)
+
+    val rowwise = (FastIndexedSeq(
+      6, 7, 8,
+      9, 10, 11,
+      12, 13, 14), 3L, 3L)
+
+    val colwise = (FastIndexedSeq(
+      15, 16,
+      17, 18), 2L, 2L)
+
+    val emptyRowwise = (FastIndexedSeq(), 0L, 3L)
+    val emptyColwise = (FastIndexedSeq(), 2L, 0L)
+    val na = (null, 0L, 0L)
+
+    val rowwiseExpected = Array(
+      Array(0, 1, 2),
+      Array(3, 4, 5),
+      Array(6, 7, 8),
+      Array(9, 10, 11),
+      Array(12, 13, 14))
+    val colwiseExpected = Array(
+      Array(0, 1, 2, 15, 16),
+      Array(3, 4, 5, 17, 18))
+
+    assertNDEvals(NDArrayConcat(nds(nd1, rowwise), 0), rowwiseExpected)
+    assertNDEvals(NDArrayConcat(nds(nd1, rowwise, emptyRowwise), 0), rowwiseExpected)
+    assertNDEvals(NDArrayConcat(nds(nd1, emptyRowwise, rowwise), 0), rowwiseExpected)
+
+    assertNDEvals(NDArrayConcat(nds(nd1, colwise), 1), colwiseExpected)
+    assertNDEvals(NDArrayConcat(nds(nd1, colwise, emptyColwise), 1), colwiseExpected)
+    assertNDEvals(NDArrayConcat(nds(nd1, emptyColwise, colwise), 1), colwiseExpected)
+
+    // FIXME: This is changing type during PruneDeadFields for some reason...
+//    assertNDEvals(NDArrayConcat(nds(nd1, na), 1), null)
+    assertNDEvals(NDArrayConcat(nds(na, na), 1), null)
+    assertNDEvals(NDArrayConcat(NA(TArray(TNDArray(TInt32(), Nat(2)))), 1), null)
+  }
+
   @Test def testNDArrayMap() {
     implicit val execStrats: Set[ExecStrategy] = Set()
 
@@ -2454,7 +2521,7 @@ class IRSuite extends HailSuite {
 
     val collectSig = AggSignature(Collect(), Seq(), Seq(TInt32()))
 
-    val sumSig = AggSignature(Sum(), Seq(), Seq(TInt32()))
+    val sumSig = AggSignature(Sum(), Seq(), Seq(TInt64()))
 
     val callStatsSig = AggSignature(CallStats(), Seq(TInt32()), Seq(TCall()))
 
@@ -2465,6 +2532,11 @@ class IRSuite extends HailSuite {
 
     val countSig = AggSignature(Count(), Seq(), Seq())
     val count = ApplyAggOp(FastIndexedSeq.empty, FastIndexedSeq.empty, countSig)
+
+    val groupSignature = AggStateSignature(
+      Map(Group() -> AggSignature(Group(), FastIndexedSeq(TVoid), FastIndexedSeq(TInt32(), TVoid))),
+      Group(),
+      Some(FastIndexedSeq(sumSig.singletonContainer)))
 
     val table = TableRange(100, 10)
 
@@ -2499,6 +2571,7 @@ class IRSuite extends HailSuite {
       MakeStream(FastSeq(i, NA(TInt32()), I32(-3)), TStream(TInt32())),
       nd,
       NDArrayReshape(nd, MakeTuple.ordered(Seq(I64(4)))),
+      NDArrayConcat(MakeArray(FastSeq(nd, nd), TArray(nd.typ)), 0),
       NDArrayRef(nd, FastSeq(I64(1), I64(2))),
       NDArrayMap(nd, "v", ApplyUnaryPrimOp(Negate(), v)),
       NDArrayMap2(nd, nd, "l", "r", ApplyBinaryPrimOp(Add(), l, r)),
@@ -2528,8 +2601,19 @@ class IRSuite extends HailSuite {
       ArrayScan(a, I32(0), "x", "v", v),
       ArrayLeftJoinDistinct(ArrayRange(0, 2, 1), ArrayRange(0, 3, 1), "l", "r", I32(0), I32(1)),
       ArrayFor(a, "v", Void()),
-      ArrayAgg(a, "x", ApplyAggOp(FastIndexedSeq.empty, FastIndexedSeq(Ref("x", TInt32())), sumSig)),
-      ArrayAggScan(a, "x", ApplyScanOp(FastIndexedSeq.empty, FastIndexedSeq(Ref("x", TInt32())), sumSig)),
+      ArrayAgg(a, "x", ApplyAggOp(FastIndexedSeq.empty, FastIndexedSeq(Cast(Ref("x", TInt32()), TInt64())), sumSig)),
+      ArrayAggScan(a, "x", ApplyScanOp(FastIndexedSeq.empty, FastIndexedSeq(Cast(Ref("x", TInt32()), TInt64())), sumSig)),
+      RunAgg(Begin(FastSeq(
+        InitOp(0, FastIndexedSeq(Begin(FastIndexedSeq(InitOp(0, FastSeq(), sumSig)))), groupSignature, Group()),
+        SeqOp(0, FastSeq(I32(1), SeqOp(0, FastSeq(), sumSig)), groupSignature, Group()))),
+        AggStateValue(0, groupSignature), FastIndexedSeq(groupSignature)),
+      RunAggScan(ArrayRange(I32(0), I32(1), I32(1)),
+        "foo",
+        InitOp(0, FastIndexedSeq(Begin(FastIndexedSeq(InitOp(0, FastSeq(), sumSig)))), groupSignature, Group()),
+        SeqOp(0, FastSeq(Ref("foo", TInt32()), SeqOp(0, FastSeq(), sumSig)), groupSignature, Group()),
+        AggStateValue(0, groupSignature),
+        FastIndexedSeq(groupSignature)
+        ),
       AggFilter(True(), I32(0), false),
       AggExplode(NA(TArray(TInt32())), "x", I32(0), false),
       AggGroupBy(True(), I32(0), false),
@@ -2556,6 +2640,7 @@ class IRSuite extends HailSuite {
       invoke("toFloat64", TFloat64(), i), // Apply
       Literal(TStruct("x" -> TInt32()), Row(1)),
       TableCount(table),
+      MatrixCount(mt),
       TableGetGlobals(table),
       TableCollect(table),
       TableAggregate(table, MakeStruct(Seq("foo" -> count))),
@@ -2569,6 +2654,7 @@ class IRSuite extends HailSuite {
       MatrixMultiWrite(Array(mt, mt), MatrixNativeMultiWriter(tmpDir.createLocalTempFile())),
       TableMultiWrite(Array(table, table), WrappedMatrixNativeMultiWriter(MatrixNativeMultiWriter(tmpDir.createLocalTempFile()), FastIndexedSeq("foo"))),
       MatrixAggregate(mt, MakeStruct(Seq("foo" -> count))),
+      BlockMatrixCollect(blockMatrix),
       BlockMatrixWrite(blockMatrix, blockMatrixWriter),
       BlockMatrixMultiWrite(IndexedSeq(blockMatrix, blockMatrix), blockMatrixMultiWriter),
       CollectDistributedArray(ArrayRange(0, 3, 1), 1, "x", "y", Ref("x", TInt32())),
@@ -2733,9 +2819,18 @@ class IRSuite extends HailSuite {
     val dot = BlockMatrixDot(read, transpose)
     val slice = BlockMatrixSlice(read, FastIndexedSeq(FastIndexedSeq(0, 2, 1), FastIndexedSeq(0, 1, 1)))
 
+    val sparsify1 = BlockMatrixSparsify(read, RectangleSparsifier(FastIndexedSeq(FastIndexedSeq(0L, 1L, 5L, 6L))))
+    val sparsify2 = BlockMatrixSparsify(read, BandSparsifier(true, -1L, 1L))
+    val sparsify3 = BlockMatrixSparsify(read, RowIntervalSparsifier(true, FastIndexedSeq(0L, 1L, 5L, 6L), FastIndexedSeq(5L, 6L, 8L, 9L)))
+    val densify = BlockMatrixDensify(read)
+
     val blockMatrixIRs = Array[BlockMatrixIR](read,
       transpose,
       dot,
+      sparsify1,
+      sparsify2,
+      sparsify3,
+      densify,
       RelationalLetBlockMatrix("x", I32(0), read),
       slice)
 
@@ -2767,7 +2862,7 @@ class IRSuite extends HailSuite {
       "x" -> TInt32()
     ))
 
-    val s = Pretty(x)
+    val s = Pretty(x, elideLiterals = false)
     val x2 = IRParser.parse_value_ir(s, env)
 
     assert(x2 == x)
@@ -2775,21 +2870,21 @@ class IRSuite extends HailSuite {
 
   @Test(dataProvider = "tableIRs")
   def testTableIRParser(x: TableIR) {
-    val s = Pretty(x)
+    val s = Pretty(x, elideLiterals = false)
     val x2 = IRParser.parse_table_ir(s)
     assert(x2 == x)
   }
 
   @Test(dataProvider = "matrixIRs")
   def testMatrixIRParser(x: MatrixIR) {
-    val s = Pretty(x)
+    val s = Pretty(x, elideLiterals = false)
     val x2 = IRParser.parse_matrix_ir(s)
     assert(x2 == x)
   }
 
   @Test(dataProvider = "blockMatrixIRs")
   def testBlockMatrixIRParser(x: BlockMatrixIR) {
-    val s = Pretty(x)
+    val s = Pretty(x, elideLiterals = false)
     val x2 = IRParser.parse_blockmatrix_ir(s)
     assert(x2 == x)
   }
@@ -3060,7 +3155,7 @@ class IRSuite extends HailSuite {
     val lit = Literal(t, Row(1L))
 
     assert(IRParser.parseType(t.parsableString()) == t)
-    assert(IRParser.parse_value_ir(Pretty(lit)) == lit)
+    assert(IRParser.parse_value_ir(Pretty(lit, elideLiterals = false)) == lit)
   }
 
   @Test def regressionTestUnifyBug(): Unit = {

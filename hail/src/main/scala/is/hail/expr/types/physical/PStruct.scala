@@ -28,7 +28,7 @@ object PStruct {
   def canonical(t: PType): PStruct = PCanonicalStruct.canonical(t)
 }
 
-abstract class PStruct extends PBaseStruct {
+trait PStruct extends PBaseStruct {
   lazy val virtualType: TStruct = TStruct(fields.map(f => Field(f.name, f.typ.virtualType, f.index)), required)
 
   def copy(fields: IndexedSeq[PField] = this.fields,  required: Boolean = this.required): PStruct
@@ -41,8 +41,6 @@ abstract class PStruct extends PBaseStruct {
     assert(so == null || so.size == types.size)
     CodeOrdering.rowOrdering(this, other.asInstanceOf[PStruct], mb, so)
   }
-
-  def unsafeStructInsert(typeToInsert: PType, path: List[String]): (PStruct, UnsafeInserter)
 
   def updateKey(key: String, i: Int, sig: PType): PStruct
 

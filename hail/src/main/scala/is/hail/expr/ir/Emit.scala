@@ -311,7 +311,8 @@ private class Emit(
     def wrapToMethod(irs: Seq[IR], env: E = env, container: Option[AggContainer] = container)(useValues: (EmitMethodBuilder, PType, EmitTriplet) => Code[Unit]): Code[Unit] =
       this.wrapToMethod(irs, env, container)(useValues)
 
-    def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) = this.emitArrayIterator(ir, env, er, container)
+    def emitArrayIterator(ir: IR, env: E = env, container: Option[AggContainer] = container) =
+      this.emitArrayIterator(ir, env, er, container)
 
     def emitStream2(ir: IR, env: E = env, container: Option[AggContainer] = container): COption[Stream[EmitTriplet]] =
       EmitStream2(this, Streamify(ir), env, er, container)
@@ -594,11 +595,9 @@ private class Emit(
             distinct,
             sorter.toRegion()))
 
-      case ToArray(a) =>
-        emit(a)
+      case ToArray(a) => emit(a)
 
-      case ToStream(a) =>
-        emit(a)
+      case ToStream(a) => emit(a)
 
       case x@LowerBoundOnOrderedCollection(orderedCollection, elem, onKey) =>
         val typ: PContainer = coerce[PIterable](orderedCollection.pType).asPContainer
@@ -719,7 +718,7 @@ private class Emit(
               srvb.offset
             ))))
 
-      case _: ArrayMap | _: ArrayZip | _: ArrayFilter | _: ArrayRange | _: ArrayFlatMap | _: ArrayScan | _: ArrayLeftJoinDistinct | _: RunAggScan | _: ArrayAggScan | _: ReadPartition =>
+      case _: ArrayMap | _: ArrayZip | _: ArrayFilter | _: ArrayRange | _: ArrayFlatMap | _: ArrayScan | _: ArrayLeftJoinDistinct | _: RunAggScan | _: ReadPartition | _: MakeStream | _: StreamRange =>
         emitArrayIterator(ir).toEmitTriplet(mb, PArray(coerce[PStreamable](ir.pType).elementType))
 
       case ArrayFold(a, zero, accumName, valueName, body) =>
@@ -853,57 +852,6 @@ private class Emit(
           codeRes.setup,
           resm := codeRes.m,
           resv.storeAny(resm.mux(defaultValue(result.pType), codeRes.v)),
-          aggCleanup)
-
-        EmitTriplet(aggregation, resm, resv)
-
-      case ArrayAgg(a, name, query) =>
-        assert(!ContainsAggIntermediate(query))
-        val tarray = coerce[TStreamable](a.typ)
-        val eti = typeToTypeInfo(tarray.elementType)
-        val xmv = mb.newField[Boolean]()
-        val xvv = coerce[Any](mb.newField(name)(eti))
-        val perEltEnv = env.bind(
-          (name, (eti, xmv.load(), xvv.load())))
-
-        val res = genUID()
-        val extracted = agg.Extract(query, res)
-
-        val (newContainer, aggSetup, aggCleanup) = AggContainer.fromFunctionBuilder(extracted.aggs.map(_.toCanonicalPhysical), mb.fb, "array_agg")
-
-        val init = Optimize(extracted.init, noisy = true,
-          context = "ArrayAgg/agg.Extract/init", ctx)
-        val perElt = Optimize(extracted.seqPerElt, noisy = true,
-          context = "ArrayAgg/agg.Extract/perElt", ctx)
-        val postAggIR = Optimize[IR](Let(res, extracted.results, extracted.postAggIR), noisy = true,
-          context = "ArrayAgg/agg.Extract/postAggIR", ctx)
-
-        val codeInit = emit(init, env = env, container = Some(newContainer))
-        val codePerElt = emit(perElt, env = perEltEnv, container = Some(newContainer))
-        val postAgg = emit(postAggIR, env = env, container = Some(newContainer))
-
-        val resm = mb.newField[Boolean]()
-        val resv = mb.newField(name)(typeToTypeInfo(query.pType))
-
-        val aBase = emitArrayIterator(a)
-        val cont = { (m: Code[Boolean], v: Code[_]) =>
-          Code(xmv := m,
-            xvv := xmv.mux(defaultValue(tarray.elementType), v),
-            codePerElt.setup)
-        }
-        val processAElts = aBase.arrayEmitter(cont)
-        val ma = processAElts.m.getOrElse(const(false))
-
-        val aggregation = Code(
-          aggSetup,
-          codeInit.setup,
-          processAElts.setup,
-          ma.mux(
-            Code._empty,
-            Code(aBase.calcLength, processAElts.addElements)),
-          postAgg.setup,
-          resm := postAgg.m,
-          resv.storeAny(resm.mux(defaultValue(query.pType), postAgg.value)),
           aggCleanup)
 
         EmitTriplet(aggregation, resm, resv)
@@ -1178,23 +1126,6 @@ private class Emit(
                 coerce[String](StringFunctions.wrapArg(er, m.pType)(cm.v)))))),
           false,
           defaultValue(typ))
-      case ir@ApplyIR(fn, args) =>
-        assert(!ir.inline)
-        val mfield = mb.newField[Boolean]
-        val vfield = mb.newField()(typeToTypeInfo(ir.typ))
-
-        val addFields = { (newMB: EmitMethodBuilder, t: PType, v: EmitTriplet) =>
-          Code(
-            v.setup,
-            mfield := v.m,
-            mfield.mux(
-              vfield.storeAny(defaultValue(t)),
-              vfield.storeAny(v.v)))
-        }
-
-        EmitTriplet(
-          wrapToMethod(FastSeq(ir.explicitNode))(addFields),
-          mfield, vfield)
 
       case ir@Apply(fn, args, rt) =>
         val impl = ir.implementation
@@ -1362,6 +1293,7 @@ private class Emit(
       case x: NDArrayMap  =>  emitDeforestedNDArray(x)
       case x: NDArrayMap2 =>  emitDeforestedNDArray(x)
       case x: NDArrayReshape => emitDeforestedNDArray(x)
+      case x: NDArrayConcat => emitDeforestedNDArray(x)
       case x: NDArraySlice => emitDeforestedNDArray(x)
 
       case NDArrayMatMul(lChild, rChild) =>
@@ -1968,7 +1900,7 @@ private class Emit(
   }
 
   private def emitArrayIterator(ir: IR, env: E, er: EmitRegion, container: Option[AggContainer]): ArrayIteratorTriplet =
-    EmitStream(this, Streamify(ir), env, er, container)
+    EmitStream(this, ir, env, er, container)
       .toArrayIterator(mb)
 
   private def present(x: Code[_]): EmitTriplet =
@@ -2167,6 +2099,91 @@ private class Emit(
           }
         }
 
+      case x@NDArrayConcat(nds, axis) =>
+        val inputType = coerce[PArray](nds.pType2)
+        val inputNDType = coerce[PNDArray](inputType.elementType)
+
+        val ndType = coerce[PNDArray](x.pType2)
+        val codeNDs = emit(nds, env, er, None)
+
+        val inputArray = mb.newField[Long]
+        val n = mb.newField[Int]
+        val i = mb.newField[Int]
+
+        val loadAndValidateArray = Code(
+          inputArray := codeNDs.value[Long],
+          n := inputType.loadLength(inputArray),
+          (n < 1).orEmpty(Code._fatal("NDArrayConcat: can't concatenate 0 NDArrays")))
+
+        val (missingSetup: Code[Unit @unchecked], missing: Code[Boolean @unchecked], setupShape: Code[Unit @unchecked]) = (inputType.required, inputNDType.required) match {
+          case (true, true) => (Code._empty, const(false), Code(
+            codeNDs.setup,
+            codeNDs.m.orEmpty(Code._fatal("NDArrayConcat: required NDArray can't be missing")),
+            loadAndValidateArray))
+          case (false, true) => (codeNDs.setup, codeNDs.m, loadAndValidateArray)
+          case _ =>
+            val m = mb.newField[Boolean]
+            val setup = Code(
+              codeNDs.setup,
+              m := codeNDs.m,
+              loadAndValidateArray,
+              i := 0,
+              Code.whileLoop(i < n,
+                m := m | inputType.isElementMissing(inputArray, i),
+                i := i + 1))
+            (setup, m.load(), Code._empty)
+        }
+
+        val localDim = mb.newField[Long]
+        val outputShape = Array.tabulate(ndType.nDims) { idx =>
+          Code(
+            localDim := inputNDType.dimensionLength(inputType.loadElement(inputArray, 0), idx),
+            i := 1,
+            Code.whileLoop(i < n,
+              {
+                if (idx == axis)
+                  localDim := localDim + inputNDType.dimensionLength(inputType.loadElement(inputArray, i), idx)
+                else
+                  inputNDType.dimensionLength(inputType.loadElement(inputArray, i), idx).cne(localDim)
+                    .orEmpty(Code._fatal(
+                      const(s"NDArrayConcat: mismatched dimensions of input NDArrays along axis $i: expected ")
+                        .concat(localDim.toS).concat(", got ")
+                        .concat(inputNDType.dimensionLength(inputType.loadElement(inputArray, i), idx).toS)))
+              },
+              i := i + 1),
+            localDim)
+        }
+
+        new NDArrayEmitter(mb, x.typ.nDims,
+          outputShape,
+          ndType.shape.pType,
+          ndType.elementType,
+          setupShape,
+          missingSetup,
+          missing) {
+          private val concatAxisIdx = mb.newLocal[Long]
+
+          override def outputElement(idxVars: Array[Code[Long]]): Code[_] = {
+            val setupTransformedIdx = Code(
+              i := 0,
+              concatAxisIdx := idxVars(axis),
+              Code.whileLoop(concatAxisIdx >= inputNDType.dimensionLength(inputType.loadElement(inputArray, i), axis),
+                concatAxisIdx := concatAxisIdx - inputNDType.dimensionLength(inputType.loadElement(inputArray, i), axis),
+                i := i + 1
+              ),
+              (i > n).orEmpty(Code._fatal("NDArrayConcat: trying to access element greater than length of concatenation axis")))
+
+            val transformedIdxs = Array.tabulate(x.typ.nDims) { idx =>
+              if (idx == axis) concatAxisIdx.load() else idxVars(idx)
+            }
+            Code(
+              setupTransformedIdx,
+              Region.loadIRIntermediate(ndType.elementType)(
+                inputNDType.getElementAddress(transformedIdxs, inputType.loadElement(inputArray, i), mb)))
+          }
+        }
+
+
       case x@NDArraySlice(child, slicesIR) =>
         val childEmitter = deforest(child)
 
@@ -2347,6 +2364,7 @@ abstract class NDArrayEmitter(
     val idxVars = Array.tabulate(nDims) {_ => mb.newField[Long]}
     val loadedIdxVars = idxVars.map(_.load())
     val storeElement = mb.newLocal(typeToTypeInfo(outputElementPType.virtualType)).asInstanceOf[LocalRef[Double]]
+
     val body =
       Code(
         storeElement := outputElement(loadedIdxVars).asInstanceOf[Code[Double]],

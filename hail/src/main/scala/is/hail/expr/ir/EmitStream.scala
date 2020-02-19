@@ -59,7 +59,7 @@ object COption {
     val m = mb.newLocal[Boolean]
     val v = mb.newLocal(ti)
     val setup = JoinPoint.CallCC[Unit] { (jb, ret) =>
-      opt(Code(m := true, v.storeAny(ti.defaultValue), ret(())),
+      opt(Code(m := true, v.storeAny(defaultValue(ti)), ret(())),
           a => Code(m := false, v.storeAny(a), ret(())))(EmitStreamContext(mb, jb))
     }
     EmitTriplet(setup, m, v.load())
@@ -1006,7 +1006,7 @@ object EmitStream {
     def emitIR(ir: IR, env: Emit.E): EmitTriplet =
       emitter.emit(ir, env, er, container)
 
-    def emitStream(streamIR: IR, env: Emit.E): Parameterized[Any, EmitTriplet] =
+    def emitStream(streamIR: IR, env: Emit.E): Parameterized[Any, EmitTriplet] = {
       streamIR match {
         case NA(_) =>
           missing
@@ -1035,14 +1035,19 @@ object EmitStream {
         case x@MakeStream(elements, t) =>
           val e = coerce[PStreamable](x.pType).elementType
           implicit val eP = TypedTriplet.pack(e)
-          sequence(elements.map { ir => TypedTriplet(e, emitIR(ir, env)) })
-            .map(_.untyped)
+          sequence(elements.map {
+            ir => TypedTriplet(e, {
+              val et = emitIR(ir, env)
+              EmitTriplet(et.setup, et.m, e.copyFromTypeAndStackValue(er.mb, er.region, ir.pType, et.value))
+            })
+          }).map(_.untyped)
 
         case StreamRange(startIR, stopIR, stepIR) =>
           val step = fb.newField[Int]("sr_step")
           val start = fb.newField[Int]("sr_start")
           val stop = fb.newField[Int]("sr_stop")
           val llen = fb.newField[Long]("sr_llen")
+
           range(start, step)
             .map(present)
             .guardParam { (_, k) =>
@@ -1101,6 +1106,7 @@ object EmitStream {
         case ArrayMap(childIR, name, bodyIR) =>
           val childEltType = childIR.pType.asInstanceOf[PStreamable].elementType
           val childEltTI = coerce[Any](typeToTypeInfo(childEltType))
+
           emitStream(childIR, env).map { eltt =>
             val eltm = fb.newField[Boolean](name + "_missing")
             val eltv = fb.newField(name)(childEltTI)
@@ -1143,6 +1149,7 @@ object EmitStream {
         case ArrayFilter(childIR, name, condIR) =>
           val childEltType = childIR.pType.asInstanceOf[PStreamable].elementType
           val childEltTI = coerce[Any](typeToTypeInfo(childEltType))
+
           emitStream(childIR, env).filterMap { (eltt, k) =>
             val eltm = fb.newField[Boolean](name + "_missing")
             val eltv = fb.newField(name)(childEltTI)
@@ -1177,17 +1184,17 @@ object EmitStream {
           val r = rightIR.pType.asInstanceOf[PStreamable].elementType
           implicit val lP = TypedTriplet.pack(l)
           implicit val rP = TypedTriplet.pack(r)
-          val (leltm, leltv) = lP.newFields(fb, "join_lelt")
-          val (reltm, reltv) = rP.newFields(fb, "join_relt")
+          val leltVar = lP.newFields(fb, "join_lelt")
+          val reltVar = rP.newFields(fb, "join_relt")
           val env2 = env
-            .bind(leftName -> ((typeToTypeInfo(l), leltm, leltv)))
-            .bind(rightName -> ((typeToTypeInfo(r), reltm, reltv)))
+            .bind(leftName -> ((typeToTypeInfo(l), leltVar.load.m, leltVar.load.v)))
+            .bind(rightName -> ((typeToTypeInfo(r), reltVar.load.m, reltVar.load.v)))
 
           def compare(lelt: TypedTriplet[l.type], relt: TypedTriplet[r.type]): Code[Int] = {
             val compt = emitIR(compIR, env2)
             Code(
-              lelt.storeTo(leltm, leltv),
-              relt.storeTo(reltm, reltv),
+              leltVar := lelt,
+              reltVar := relt,
               compt.setup,
               compt.m.orEmpty(Code._fatal("ArrayLeftJoinDistinct: comp can't be missing")),
               coerce[Int](compt.v))
@@ -1201,8 +1208,8 @@ object EmitStream {
           ).map { case (lelt, relt) =>
               val joint = emitIR(joinIR, env2)
               EmitTriplet(Code(
-                lelt.storeTo(leltm, leltv),
-                relt.storeTo(reltm, reltv),
+                leltVar := lelt,
+                reltVar := relt,
                 joint.setup), joint.m, joint.v) }
 
         case ArrayScan(childIR, zeroIR, accName, eltName, bodyIR) =>
@@ -1210,19 +1217,19 @@ object EmitStream {
           val a = zeroIR.pType
           implicit val eP = TypedTriplet.pack(e)
           implicit val aP = TypedTriplet.pack(a)
-          val (eltm, eltv) = eP.newFields(fb, "scan_elt")
-          val (accm, accv) = aP.newFields(fb, "scan_acc")
+          val eltVar = eP.newFields(fb, "scan_elt")
+          val accVar = aP.newFields(fb, "scan_acc")
           val zerot = emitIR(zeroIR, env)
           val bodyt = emitIR(bodyIR, env
-            .bind(accName -> ((typeToTypeInfo(a), accm, accv)))
-            .bind(eltName -> ((typeToTypeInfo(e), eltm, eltv))))
+            .bind(accName -> ((typeToTypeInfo(a), accVar.load.m, accVar.load.v)))
+            .bind(eltName -> ((typeToTypeInfo(e), eltVar.load.m, eltVar.load.v))))
           emitStream(childIR, env).scan(TypedTriplet.missing(a))(
             TypedTriplet(a, zerot),
             (eltt, acc, k) => {
               val elt = TypedTriplet(e, eltt)
               Code(
-                elt.storeTo(eltm, eltv),
-                acc.storeTo(accm, accv),
+                eltVar := elt,
+                accVar := acc,
                 k(TypedTriplet(a, bodyt)))
             }).map(_.untyped)
 
@@ -1234,9 +1241,9 @@ object EmitStream {
           val resultPType = result.pType
           implicit val eP = TypedTriplet.pack(producerElementPType)
           implicit val aP = TypedTriplet.pack(resultPType)
-          val (eltm, eltv) = eP.newFields(fb, "aggscan_elt")
-          val (postm, postv) = aP.newFields(fb, "aggscan_new_elt")
-          val bodyEnv = env.bind(name -> ((typeToTypeInfo(producerElementPType), eltm, eltv)))
+          val elt = eP.newFields(fb, "aggscan_elt")
+          val post = aP.newFields(fb, "aggscan_new_elt")
+          val bodyEnv = env.bind(name -> ((typeToTypeInfo(producerElementPType), elt.load.m, elt.load.v)))
           val cInit = emitter.emit(init, env, er, Some(newContainer))
           val seqPerElt = emitter.emit(seqs, bodyEnv, er, Some(newContainer))
           val postt = emitter.emit(result, bodyEnv, er, Some(newContainer))
@@ -1245,57 +1252,15 @@ object EmitStream {
             .map[EmitTriplet] { eltt =>
               EmitTriplet(
                 Code(
-                  TypedTriplet(producerElementPType, eltt).storeTo(eltm, eltv),
-                  TypedTriplet(resultPType, postt).storeTo(postm, postv),
+                  elt := TypedTriplet(producerElementPType, eltt),
+                  post := TypedTriplet(resultPType, postt),
                   seqPerElt.setup),
-                postm,
-                postv)
+                post.load.m,
+                post.load.v)
             }.addSetup(
             _ => Code(aggSetup, cInit.setup),
             aggCleanup
           )
-
-        case ArrayAggScan(childIR, name, query) =>
-          val res = genUID()
-          val extracted =
-            try {
-              agg.Extract(agg.Extract.liftScan(query), res)
-            } catch {
-              case e: agg.UnsupportedExtraction =>
-                fatal(s"BUG: lowered aggscan to a stream, but this agg is not supported: $e")
-            }
-
-          val (newContainer, aggSetup, aggCleanup) =
-            AggContainer.fromFunctionBuilder(extracted.aggs.map(_.toCanonicalPhysical), fb, "array_agg_scan")
-          val initIR = Optimize(extracted.init, noisy = true,
-            context = "ArrayAggScan/StagedExtractAggregators/postAggIR", emitter.ctx)
-          val seqPerEltIR = Optimize(extracted.seqPerElt, noisy = true,
-            context = "ArrayAggScan/StagedExtractAggregators/init", emitter.ctx)
-          val postAggIR = Optimize[IR](Let(res, extracted.results, extracted.postAggIR), noisy = true,
-            context = "ArrayAggScan/StagedExtractAggregators/perElt", emitter.ctx)
-
-          val e = coerce[PStreamable](childIR.pType).elementType
-          val a = postAggIR.pType
-          implicit val eP = TypedTriplet.pack(e)
-          implicit val aP = TypedTriplet.pack(a)
-          val (eltm, eltv) = eP.newFields(fb, "aggscan_elt")
-          val (postm, postv) = aP.newFields(fb, "aggscan_new_elt")
-          val bodyEnv = env.bind(name -> ((typeToTypeInfo(e), eltm, eltv)))
-          val init = emitter.emit(initIR, env, er, Some(newContainer))
-          val seqPerElt = emitter.emit(seqPerEltIR, bodyEnv, er, Some(newContainer))
-          val postt = emitter.emit(postAggIR, bodyEnv, er, Some(newContainer))
-
-          emitStream(childIR, env)
-            .contMap[EmitTriplet] { (eltt, k) => Code(
-              TypedTriplet(e, eltt).storeTo(eltm, eltv),
-              TypedTriplet(a, postt).storeTo(postm, postv),
-              seqPerElt.setup,
-              k(EmitTriplet(Code._empty, postm, postv)))
-            }
-            .addSetup(
-              _ => Code(aggSetup, init.setup),
-              aggCleanup
-            )
 
         case If(condIR, thn, els) =>
           val t = thn.pType.asInstanceOf[PStreamable].elementType
@@ -1327,6 +1292,7 @@ object EmitStream {
         case _ =>
           fatal(s"not a streamable IR: ${Pretty(streamIR)}")
       }
+    }
 
     EmitStream(
       emitStream(streamIR0, env0),

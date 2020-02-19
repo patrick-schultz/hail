@@ -37,7 +37,7 @@ object Bindings {
     case AggArrayPerElement(a, _, indexName, _, _, _) => if (i == 1) FastIndexedSeq(indexName -> TInt32()) else empty
     case NDArrayMap(nd, name, _) => if (i == 1) Array(name -> -coerce[TNDArray](nd.typ).elementType) else empty
     case NDArrayMap2(l, r, lName, rName, _) => if (i == 2) Array(lName -> -coerce[TNDArray](l.typ).elementType, rName -> -coerce[TNDArray](r.typ).elementType) else empty
-    case CollectDistributedArray(contexts, globals, cname, gname, _) => if (i == 2) Array(cname -> -coerce[TArray](contexts.typ).elementType, gname -> globals.typ) else empty
+    case CollectDistributedArray(contexts, globals, cname, gname, _) => if (i == 2) Array(cname -> -coerce[TStreamable](contexts.typ).elementType, gname -> globals.typ) else empty
     case TableAggregate(child, _) => if (i == 1) child.typ.globalEnv.m else empty
     case MatrixAggregate(child, _) => if (i == 1) child.typ.globalEnv.m else empty
     case TableFilter(child, _) => if (i == 1) child.typ.rowEnv.m else empty
@@ -54,8 +54,8 @@ object Bindings {
     case MatrixMapGlobals(child, _) => if (i == 1) child.typ.globalEnv.m else empty
     case MatrixAggregateColsByKey(child, _, _) => if (i == 1) child.typ.rowEnv.m else if (i == 2) child.typ.globalEnv.m else empty
     case MatrixAggregateRowsByKey(child, _, _) => if (i == 1) child.typ.colEnv.m else if (i == 2) child.typ.globalEnv.m else empty
-    case BlockMatrixMap(_, eltName, _) => if (i == 1) Array(eltName -> TFloat64()) else empty
-    case BlockMatrixMap2(_, _, lName, rName, _) => if (i == 2) Array(lName -> TFloat64(), rName -> TFloat64()) else empty
+    case BlockMatrixMap(_, eltName, _, _) => if (i == 1) Array(eltName -> TFloat64()) else empty
+    case BlockMatrixMap2(_, _, lName, rName, _, _) => if (i == 2) Array(lName -> TFloat64(), rName -> TFloat64()) else empty
     case _ => empty
   }
 }

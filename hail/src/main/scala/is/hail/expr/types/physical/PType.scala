@@ -174,9 +174,6 @@ abstract class PType extends Serializable with Requiredness {
     unsafeOrdering()
   }
 
-  def unsafeInsert(typeToInsert: PType, path: List[String]): (PType, UnsafeInserter) =
-    PStruct.empty().unsafeInsert(typeToInsert, path)
-
   def asIdent: String = (if (required) "r_" else "o_") + _asIdent
 
   def _asIdent: String
@@ -220,6 +217,7 @@ abstract class PType extends Serializable with Requiredness {
       this
     else
       this match {
+        case PVoid => PVoid
         case PBinary(_) => PBinary(required)
         case PBoolean(_) => PBoolean(required)
         case PInt32(_) => PInt32(required)
@@ -235,6 +233,7 @@ abstract class PType extends Serializable with Requiredness {
         case t: PInterval => t.copy(required = required)
         case t: PStruct => t.copy(required = required)
         case t: PTuple => t.copy(required = required)
+        case t: PNDArray => t.copy(required = required)
       }
   }
 
@@ -321,20 +320,14 @@ abstract class PType extends Serializable with Requiredness {
 
   def copyFromTypeAndStackValue(mb: MethodBuilder, region: Code[Region], srcPType: PType, stackValue: Code[_], forceDeep: Boolean): Code[_]
 
-  def copyFromType(mb: MethodBuilder, region: Code[Region], srcPType: PType, srcAddress: Code[Long]): Code[Long] =
-    this.copyFromType(mb, region, srcPType, srcAddress, false)
-
   def copyFromTypeAndStackValue(mb: MethodBuilder, region: Code[Region], srcPType: PType, stackValue: Code[_]): Code[_] =
     this.copyFromTypeAndStackValue(mb, region, srcPType, stackValue, false)
 
   def copyFromType(region: Region, srcPType: PType, srcAddress: Long, forceDeep: Boolean): Long
 
-  def copyFromType(region: Region, srcPType: PType, srcAddress: Long): Long =
-    this.copyFromType(region, srcPType, srcAddress, false)
+  def constructAtAddress(mb: MethodBuilder, addr: Code[Long], region: Code[Region], srcPType: PType, srcAddress: Code[Long], forceDeep: Boolean): Code[Unit]
+
+  def constructAtAddress(addr: Long, region: Region, srcPType: PType, srcAddress: Long, forceDeep: Boolean): Unit
 
   def deepRename(t: Type) = this
-
-  def storeShallowAtOffset(dstAddress: Code[Long], srcAddress: Code[Long]): Code[Unit]
-
-  def storeShallowAtOffset(dstAddress: Long, srcAddress: Long)
 }

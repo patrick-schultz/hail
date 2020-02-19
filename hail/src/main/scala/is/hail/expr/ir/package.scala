@@ -42,7 +42,18 @@ package object ir {
 
   def defaultValue(t: PType): Code[_] = defaultValue(t.virtualType)
 
-  def defaultValue(t: Type): Code[_] = typeToTypeInfo(t).defaultValue
+  def defaultValue(t: Type): Code[_] = defaultValue(typeToTypeInfo(t))
+
+  def defaultValue(ti: TypeInfo[_]): Code[_] = ti match {
+    case UnitInfo => Code._empty[Unit]
+    case BooleanInfo => false
+    case IntInfo => 0
+    case LongInfo => 0L
+    case FloatInfo => 0.0f
+    case DoubleInfo => 0.0
+    case _: ClassInfo[_] => Code._null
+    case ti => throw new RuntimeException(s"unsupported type found: $ti")
+  }
 
   // Build consistent expression for a filter-condition with keep polarity,
   // using Let to manage missing-ness.

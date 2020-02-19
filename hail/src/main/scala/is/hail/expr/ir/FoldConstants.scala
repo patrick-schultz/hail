@@ -1,5 +1,6 @@
 package is.hail.expr.ir
 
+import is.hail.expr.types.virtual.TStream
 import is.hail.utils.HailException
 
 object FoldConstants {
@@ -18,6 +19,7 @@ object FoldConstants {
              _: MakeNDArray |
              _: NDArrayShape |
              _: NDArrayReshape |
+             _: NDArrayConcat |
              _: NDArraySlice |
              _: NDArrayMap |
              _: NDArrayMap2 |
@@ -26,6 +28,7 @@ object FoldConstants {
              _: NDArrayWrite |
              _: NDArrayMatMul |
              _: Die => None
+        case ir: IR if ir.typ.isInstanceOf[TStream] => None
         case ir: IR if !IsConstant(ir) &&
           Interpretable(ir) &&
           ir.children.forall {

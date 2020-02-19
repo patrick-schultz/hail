@@ -1,6 +1,6 @@
 package is.hail.expr.ir
 
-import is.hail.annotations.{Region, RegionValue, SafeRow, ScalaToRegionValue}
+import is.hail.annotations.{Region, RegionValue, RegionValueBuilder, SafeRow, ScalaToRegionValue}
 import is.hail.asm4s._
 import is.hail.asm4s.joinpoint._
 import is.hail.expr.types.physical._
@@ -9,6 +9,7 @@ import is.hail.utils._
 import is.hail.variant.Call2
 import is.hail.HailSuite
 import is.hail.asm4s.joinpoint.JoinPoint.CallCC
+import is.hail.expr.ir.lowering.LoweringPipeline
 import org.apache.spark.sql.Row
 import org.testng.annotations.Test
 
@@ -527,7 +528,8 @@ class EmitStreamSuite extends HailSuite {
 
   @Test def testEmitAggScan() {
     def assertAggScan(ir: IR, inType: Type, tests: (Any, Any)*) = {
-      val aggregate = compileStream(ir, PType.canonical(inType))
+      val aggregate = compileStream(LoweringPipeline.compileLowerer.apply(ctx, ir, false).asInstanceOf[IR],
+        PType.canonical(inType))
       for ((inp, expected) <- tests)
         assert(aggregate(inp) == expected, Pretty(ir))
     }
@@ -612,6 +614,39 @@ class EmitStreamSuite extends HailSuite {
     for (((ir, v), len) <- tests zip lens) {
       assert(evalStream(ir) == v, Pretty(ir))
       assert(evalStreamLen(ir) == len, Pretty(ir))
+    }
+  }
+
+  @Test def testZipIfNA() {
+
+    val t = PCanonicalStruct("missingParam" -> PCanonicalArray(PFloat64()),
+      "xs" -> PCanonicalArray(PFloat64()),
+      "ys" -> PCanonicalArray(PFloat64()))
+    val i1 = Ref("in", t.virtualType)
+    val ir = MakeTuple.ordered(Seq(ArrayFold(
+      ArrayZip(
+        FastIndexedSeq(
+          If(IsNA(GetField(i1, "missingParam")), NA(TArray(TFloat64())), GetField(i1, "xs")),
+          GetField(i1, "ys")
+        ),
+        FastIndexedSeq("zipL", "zipR"),
+        Ref("zipL", TFloat64()) * Ref("zipR", TFloat64()),
+        ArrayZipBehavior.AssertSameLength
+      ),
+      F64(0d),
+      "foldAcc", "foldVal",
+      Ref("foldAcc", TFloat64()) + Ref("foldVal", TFloat64())
+    )))
+
+    val (pt, f) = Compile[Long, Long](ctx, "in", t, ir)
+
+    Region.smallScoped { r =>
+      val rvb = new RegionValueBuilder(r)
+      rvb.start(t)
+      rvb.addAnnotation(t.virtualType, Row(null, IndexedSeq(1d, 2d), IndexedSeq(3d, 4d)))
+      val input = rvb.end()
+
+      assert(SafeRow.read(pt, r, f(0, r)(r, input, false)) == Row(null))
     }
   }
 }

@@ -35,6 +35,7 @@ object Compilable {
       case _: MatrixWrite => false
       case _: MatrixMultiWrite => false
       case _: TableMultiWrite => false
+      case _: BlockMatrixCollect => false
       case _: BlockMatrixWrite => false
       case _: BlockMatrixMultiWrite => false
       case _: TableToValueApply => false
@@ -45,5 +46,24 @@ object Compilable {
       case _: RelationalLet => false
       case _ => true
     }
+  }
+}
+
+object Emittable {
+  def isNonEmittableAgg(ir: IR): Boolean = ir match {
+    case _: ArrayAgg => true
+    case _: ArrayAggScan => true
+    case _: ApplyAggOp => true
+    case _: AggArrayPerElement => true
+    case _: AggFilter => true
+    case _: AggGroupBy => true
+    case _: ApplyScanOp => true
+    case _: AggExplode => true
+    case _ => false
+  }
+  def apply(ir: IR): Boolean = ir match {
+    case x if isNonEmittableAgg(x) => false
+    case _: ApplyIR => false
+    case x => Compilable(x)
   }
 }

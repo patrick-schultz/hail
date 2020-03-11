@@ -268,9 +268,8 @@ object Region {
   def stagedCreate(blockSize: Size): Code[Region] =
     Code.invokeScalaObject[Int, RegionPool, Region](Region.getClass, "apply", asm4s.const(blockSize), Code._null)
 
-  def apply(blockSize: Region.Size = Region.REGULAR, pool: RegionPool = null): Region = {
-    (if (pool == null) RegionPool.get else pool)
-      .getRegion(blockSize)
+  def apply(blockSize: Region.Size = Region.REGULAR): Region = {
+    RegionPool.get.getRegion(blockSize)
   }
 
   def pretty(t: PType, off: Long): String = {
@@ -339,7 +338,97 @@ object Region {
   }
 }
 
-final class Region protected[annotations](var blockSize: Region.Size, var pool: RegionPool, var memory: RegionMemory = null) extends AutoCloseable {
+trait RegionHandle {
+  def allocate(n: Long): Long
+  def allocate(a: Long, n: Long): Long
+  def addReferenceTo(r: Region): Unit
+}
+
+trait RegionKey {
+  def open[T](f: RegionHandle => T): T
+  def clear(): Unit
+  def invalidate(): Unit
+  def getNewRegion(blockSize: Region.Size): Unit
+}
+
+trait UnsafeRegionHandle extends RegionHandle {
+  def close(): Unit
+}
+
+trait UnsafeRegionKey extends RegionKey {
+  def unsafeOpen[T](f: UnsafeRegionHandle => T): T
+}
+
+object SafeRegion {
+  def apply(): RegionKey = {
+    val safeRegion = new SafeRegion(Region())
+    safeRegion.key
+  }
+
+  def unsafe(): UnsafeRegionKey = {
+    val safeRegion = new SafeRegion(Region())
+    safeRegion.key
+  }
+}
+
+final class SafeRegion private(val region: Region) {
+  private var isOpen: Boolean = false
+
+  private val handle: UnsafeRegionHandle = new UnsafeRegionHandle {
+    def allocate(n: Long): Long = {
+      assert(isOpen)
+      region.allocate(n)
+    }
+
+    def allocate(a: Long, n: Long): Long = {
+      assert(isOpen)
+      region.allocate(a, n)
+    }
+
+    def addReferenceTo(r: Region): Unit = {
+      assert(isOpen)
+      region.addReferenceTo(r)
+    }
+
+    def close() {
+      region.close()
+    }
+  }
+
+  private val key: UnsafeRegionKey = new UnsafeRegionKey {
+    def unsafeOpen[T](f: UnsafeRegionHandle => T): T = {
+      assert(!isOpen)
+      isOpen = true
+      val res = f(handle)
+      isOpen = false
+      res
+    }
+
+    def open[T](f: RegionHandle => T): T = unsafeOpen(f)
+
+    def invalidate() {
+      assert(!isOpen)
+      region.invalidate()
+    }
+
+    def clear() {
+      assert(!isOpen)
+      region.clear()
+    }
+
+    def close() {
+      assert(!isOpen)
+      region.close()
+    }
+
+    def getNewRegion(blockSize: Region.Size) {
+      assert(!isOpen)
+      region.getNewRegion(blockSize)
+    }
+  }
+}
+
+final class Region protected[annotations](var blockSize: Region.Size, val pool: RegionPool, var memory: RegionMemory = null) extends AutoCloseable {
   def isValid(): Boolean = memory != null
 
   def allocate(n: Long): Long = {

@@ -13,7 +13,7 @@ import org.apache.spark.sql.Row
 
 
 case class SerializableRegionValue(encodedValue: Array[Byte], t: PType, makeDecoder: ByteArrayInputStream => Decoder) {
-  def readRegionValue(r: Region): Long = {
+  def readRegionValue(r: RegionHandle): Long = {
     val dec = makeDecoder(new ByteArrayInputStream(encodedValue))
     val offset = dec.readRegionValue(r)
     dec.close()

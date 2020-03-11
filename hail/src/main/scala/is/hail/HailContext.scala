@@ -301,7 +301,7 @@ object HailContext {
 
   def readRowsPartition(
     makeDec: (InputStream) => Decoder
-  )(r: Region,
+  )(r: RegionHandle,
     in: InputStream,
     metrics: InputMetrics = null
   ): Iterator[Long] =
@@ -441,7 +441,7 @@ object HailContext {
   def readSplitRowsPartition(
     mkRowsDec: (InputStream) => Decoder,
     mkEntriesDec: (InputStream) => Decoder,
-    mkInserter: (Int, Region) => (is.hail.asm4s.AsmFunction5[is.hail.annotations.Region,Long,Boolean,Long,Boolean,Long])
+    mkInserter: (Int, RegionHandle) => (is.hail.asm4s.AsmFunction5[is.hail.annotations.RegionHandle,Long,Boolean,Long,Boolean,Long])
   )(ctx: RVDContext,
     isRows: InputStream,
     isEntries: InputStream,
@@ -461,7 +461,7 @@ object HailContext {
     private val rowsIdxField = rowsOffsetField.map { f => idxr.get.annotationType.asInstanceOf[TStruct].fieldIdx(f) }
     private val entriesIdxField = entriesOffsetField.map { f => idxr.get.annotationType.asInstanceOf[TStruct].fieldIdx(f) }
 
-    private val inserter = mkInserter(partIdx, ctx.freshRegion)
+    private val inserter = mkInserter(partIdx, ctx.partitionRegion)
     private val rows = try {
       if (idx.map(_.hasNext).getOrElse(true)) {
         val dec = mkRowsDec(trackedRowsIn)

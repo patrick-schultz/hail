@@ -2,7 +2,7 @@ package is.hail.io
 
 import java.io._
 
-import is.hail.annotations.Region
+import is.hail.annotations.{Region, RegionHandle}
 import is.hail.asm4s._
 import is.hail.utils.RestartableByteArrayInputStream
 import is.hail.expr.types.encoded.DecoderAsmFunction
@@ -10,7 +10,7 @@ import is.hail.expr.types.encoded.DecoderAsmFunction
 trait Decoder extends Closeable {
   def close()
 
-  def readRegionValue(region: Region): Long
+  def readRegionValue(region: RegionHandle): Long
 
   def readByte(): Byte
 

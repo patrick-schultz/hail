@@ -29,7 +29,7 @@ final case class PCanonicalLocus(rgBc: BroadcastRG, required: Boolean = false) e
 
   override def _pretty(sb: StringBuilder, indent: Call, compact: Boolean): Unit = sb.append(s"PCLocus($rg)")
 
-  def setRequired(required: Boolean) = if(required == this.required) this else PCanonicalLocus(this.rgBc, required)
+  def setRequired(required: Boolean): PCanonicalLocus = if(required == this.required) this else PCanonicalLocus(this.rgBc, required)
 
   val representation: PStruct = PCanonicalLocus.representation(required)
 
@@ -159,4 +159,7 @@ class PCanonicalLocusCode(val pt: PCanonicalLocus, val a: Code[Long]) extends PL
   def memoizeField(cb: EmitCodeBuilder, name: String): PLocusValue = memoize(cb, name, cb.fieldBuilder)
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] = Region.storeAddress(dst, a)
+
+  def nonRequired: PCanonicalLocusCode =
+    new PCanonicalLocusCode(pt.setRequired(false), a)
 }

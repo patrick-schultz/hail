@@ -63,6 +63,8 @@ abstract class PCode { self =>
 
   def asStream: PCanonicalStreamCode = asInstanceOf[PCanonicalStreamCode]
 
+  def nonRequired: PCode
+
   def castTo(mb: EmitMethodBuilder[_], region: Value[Region], destType: PType): PCode = {
     PCode(destType,
       destType.copyFromTypeAndStackValue(mb, region, pt, code))

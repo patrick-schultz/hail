@@ -1,7 +1,7 @@
 package is.hail.expr.types.physical
 
 import is.hail.expr.types.virtual.{TStream, Type}
-import is.hail.expr.ir.{EmitCode, EmitCodeBuilder, EmitUnrealizableValue, Stream}
+import is.hail.expr.ir.{EmitCode, EmitCodeBuilder, EmitMethodBuilder, EmitUnrealizableValue, Stream}
 
 final case class PCanonicalStream(elementType: PType, required: Boolean = false) extends PStream {
   override val fundamentalType: PStream = {
@@ -38,4 +38,7 @@ final case class PCanonicalStreamCode(pt: PCanonicalStream, stream: Stream[EmitC
       self
     }
   }
+
+  def nonRequired: PCanonicalStreamCode =
+    PCanonicalStreamCode(pt.setRequired(false), stream)
 }

@@ -18,7 +18,7 @@ final case class PCanonicalCall(required: Boolean = false) extends PCall {
       PInt32().codeOrdering(mb)
     }
 
-    def setRequired(required: Boolean) = if(required == this.required) this else PCanonicalCall(required)
+    def setRequired(required: Boolean): PCanonicalCall = if(required == this.required) this else PCanonicalCall(required)
 }
 
 object PCanonicalCallSettable {
@@ -83,4 +83,7 @@ class PCanonicalCallCode(val pt: PCanonicalCall, val call: Code[Int]) extends PC
   def memoizeField(cb: EmitCodeBuilder, name: String): PCallValue = memoize(cb, name, cb.fieldBuilder)
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] = Region.storeInt(dst, call)
+
+  def nonRequired: PCanonicalCallCode =
+    new PCanonicalCallCode(pt.setRequired(false), call)
 }

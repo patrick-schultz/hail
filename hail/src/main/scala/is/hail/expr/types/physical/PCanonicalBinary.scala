@@ -137,7 +137,7 @@ class PCanonicalBinary(val required: Boolean) extends PBinary {
     Region.storeAddress(addr, copyFromAddress(region, srcArray, srcAddress, deepCopy))
   }
 
-  def setRequired(required: Boolean) = if(required == this.required) this else PCanonicalBinary(required)
+  def setRequired(required: Boolean): PCanonicalBinary = if(required == this.required) this else PCanonicalBinary(required)
 }
 
 object PCanonicalBinary {
@@ -182,4 +182,7 @@ class PCanonicalBinaryCode(val pt: PCanonicalBinary, val a: Code[Long]) extends 
     memoize(cb, cb.fieldBuilder, name)
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] = Region.storeAddress(dst, a)
+
+  def nonRequired: PCanonicalBinaryCode =
+    new PCanonicalBinaryCode(pt.setRequired(false), a)
 }

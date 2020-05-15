@@ -66,7 +66,7 @@ class PCanonicalString(val required: Boolean) extends PString {
   def constructAtAddress(addr: Long, region: Region, srcPType: PType, srcAddress: Long, deepCopy: Boolean): Unit =
     fundamentalType.constructAtAddress(addr, region, srcPType.fundamentalType, srcAddress, deepCopy)
 
-  def setRequired(required: Boolean) = if(required == this.required) this else PCanonicalString(required)
+  def setRequired(required: Boolean): PCanonicalString = if(required == this.required) this else PCanonicalString(required)
 }
 
 object PCanonicalString {
@@ -91,4 +91,7 @@ class PCanonicalStringCode(val pt: PCanonicalString, a: Code[Long]) extends PStr
   def memoizeField(cb: EmitCodeBuilder, name: String): PValue = defaultMemoizeFieldImpl(cb, name)
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] = Region.storeAddress(dst, a)
+
+  def nonRequired: PCanonicalStringCode =
+    new PCanonicalStringCode(pt.setRequired(false), a)
 }

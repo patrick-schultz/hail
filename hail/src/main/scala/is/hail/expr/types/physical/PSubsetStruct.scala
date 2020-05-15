@@ -114,7 +114,7 @@ final case class PSubsetStruct(ps: PStruct, _fieldNames: Array[String]) extends 
   def allocate(region: Code[Region]): Code[Long] =
     ps.allocate(region)
 
-  override def setRequired(required: Boolean): PType =
+  override def setRequired(required: Boolean): PSubsetStruct =
     PSubsetStruct(ps.setRequired(required).asInstanceOf[PStruct], _fieldNames)
 
   def copyFromType(mb: EmitMethodBuilder[_], region: Value[Region], srcPType: PType, srcAddress: Code[Long], deepCopy: Boolean): Code[Long] = {
@@ -193,4 +193,7 @@ class PSubsetStructCode(val pt: PSubsetStruct, val a: Code[Long]) extends PBaseS
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] =
     pt.ps.constructAtAddress(mb, dst, r, pt.ps, a, deepCopy = false)
+
+  def nonRequired: PSubsetStructCode =
+    new PSubsetStructCode(pt.setRequired(false), a)
 }

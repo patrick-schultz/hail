@@ -522,6 +522,9 @@ class PCanonicalIndexableCode(val pt: PContainer, val a: Code[Long]) extends PIn
   def memoizeField(cb: EmitCodeBuilder, name: String): PIndexableValue = memoize(cb, name, cb.fieldBuilder)
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] = Region.storeAddress(dst, a)
+
+  def nonRequired: PCanonicalIndexableCode =
+    new PCanonicalIndexableCode(pt.setRequired(false), a)
 }
 
 object PCanonicalIndexableSettable {

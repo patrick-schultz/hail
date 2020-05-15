@@ -1,7 +1,7 @@
 package is.hail.expr.ir
 
 import is.hail.asm4s.{coerce => _, _}
-import is.hail.expr.types.physical.{PCode, PSettable, PValue}
+import is.hail.expr.types.physical.{PCanonicalStreamCode, PCode, PSettable, PValue}
 import is.hail.utils.FastIndexedSeq
 
 object EmitCodeBuilder {
@@ -61,9 +61,13 @@ class EmitCodeBuilder(val emb: EmitMethodBuilder[_], var code: Code[Unit]) exten
   }
 
   def memoize[T](ec: EmitCode, name: String): EmitValue = {
-    val l = emb.newEmitLocal(name, ec.pt)
-    append(l := ec)
-    l
+    if (ec.pt.isRealizable) {
+      val l = emb.newEmitLocal(name, ec.pt)
+      append(l := ec)
+      l
+    } else {
+      new EmitUnrealizableValue(ec.pt, ec)
+    }
   }
 
   def memoizeField[T](ec: EmitCode, name: String): EmitValue = {

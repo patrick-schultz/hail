@@ -692,12 +692,17 @@ object EmitStream {
     }
   }
 
-  def extendNA(mb: EmitMethodBuilder[_], eltType: PType, stream: Stream[EmitCode]): Stream[COption[EmitCode]] = new Stream[COption[EmitCode]] {
+  def extendNA(mb: EmitMethodBuilder[_], stream: Stream[EmitCode]): Stream[COption[EmitCode]] = new Stream[COption[EmitCode]] {
     def apply(eos: Code[Ctrl], push: COption[EmitCode] => Code[Ctrl])(implicit ctx: EmitStreamContext): Source[COption[EmitCode]] = {
       val atEnd = mb.newLocal[Boolean]()
-      val x = mb.newEmitLocal(eltType)
       val Lpush = CodeLabel()
-      val source = stream(Code(atEnd := true, Lpush.goto), a => Code(x := a, Lpush, push(COption(atEnd.get, x.get))))
+      val source = stream(
+        eos = Code(atEnd := true, Lpush.goto),
+        push = a => EmitCodeBuilder.scopedVoid(mb) { cb =>
+          val x = cb.memoize(a, "extendNA_elt")
+          cb += Lpush
+          cb += push(COption(atEnd.get, x))
+        })
       Source[COption[EmitCode]](
         setup0 = source.setup0,
         close0 = source.close0,
@@ -729,6 +734,9 @@ object EmitStream {
 
       def emitIR(ir: IR, env: Emit.E = env, region: Value[Region] = region, container: Option[AggContainer] = container): EmitCode =
         emitter.emitWithRegion(ir, mb, region, env, container)
+
+      def emitIRI(ir: IR, cb: EmitCodeBuilder, env: Emit.E = env, region: Value[Region] = region, container: Option[AggContainer] = container): IEmitCode =
+        emitter.emitIWithRegion(ir, cb, region, env, container)
 
       def emitVoidIR(ir: IR, env: Emit.E = env, container: Option[AggContainer] = container): Code[Unit] = {
         EmitCodeBuilder.scopedVoid(mb) { cb =>
@@ -981,16 +989,6 @@ object EmitStream {
           }
 
         case StreamZip(as, names, bodyIR, behavior) =>
-          // FIXME: should make StreamZip support unrealizable element types
-          val eltTypes = {
-            val types = as.map(ir => coerce[PStream](ir.pType).elementType)
-            behavior match {
-              case ArrayZipBehavior.ExtendNA => types.map(_.setRequired(false))
-              case _ => types
-            }
-          }
-          val eltVars = (names, eltTypes).zipped.map(mb.newEmitField)
-
           val optStreams = COption.lift(as.map(emitStream(_, env)))
 
           optStreams.map { emitStreams =>
@@ -1002,11 +1000,11 @@ object EmitStream {
 
               case behavior@(ArrayZipBehavior.TakeMinLength | ArrayZipBehavior.AssumeSameLength) =>
                 val newStream = multiZip(streams)
-                  .map { elts =>
-                    val bodyEnv = env.bind(names.zip(eltVars): _*)
-                    val body = emitIR(bodyIR, env = bodyEnv)
-                    EmitCode(Code(Code((eltVars, elts).zipped.map { (v, x) => v := x }), body.setup), body.m, body.pv)
-                  }
+                  .map { elts => EmitCode.fromI(mb) { cb =>
+                    val eltVars = (elts, names).zipped.map((elt, name) => (name, cb.memoize(elt, name)))
+
+                    emitIRI(bodyIR, cb, env = env.bind(eltVars: _*))
+                  }}
                 val newLength = behavior match {
                   case ArrayZipBehavior.TakeMinLength =>
                     lengths.reduceLeft(_.liftedZip(_).map {
@@ -1022,37 +1020,37 @@ object EmitStream {
                 // extend to infinite streams, where the COption becomes missing after EOS
                 val extended: IndexedSeq[Stream[COption[EmitCode]]] =
                   streams.zipWithIndex.map { case (stream, i) =>
-                    extendNA(mb, eltTypes(i), stream)
+                    extendNA(mb, stream)
                   }
 
                 // zip to an infinite stream, where the COption is missing when all streams are EOS
-                val flagged: Stream[COption[EmitCode]] = multiZip(extended)
-                  .mapCPS { (_, elts, k) =>
-                    val allEOS = mb.newLocal[Boolean]("zip_stream_all_eos")
-                    val anyEOS = mb.newLocal[Boolean]("zip_stream_any_eos")
-                    // convert COption[TypedTriplet[_]] to TypedTriplet[_]
+                val flagged: Stream[COption[EmitCode]] = multiZip(extended).map { elts =>
+                  val (setup, copt) = EmitCodeBuilder.scoped(mb) { cb =>
+                    val allEOS = cb.newLocal[Boolean]("zip_stream_all_eos", true)
+                    val anyEOS = cb.newLocal[Boolean]("zip_stream_any_eos", false)
+
+                    // convert COption[EmitCode] to EmitCode
                     // where COption encodes if the stream has ended; update
                     // allEOS and anyEOS
-                    val checkedElts: IndexedSeq[Code[Unit]] =
-                      elts.zip(eltVars).map { case (optEC, eltVar) =>
-                        optEC.cases(mb)(
-                          anyEOS := true,
-                          ec => Code(
-                            allEOS := false,
-                            eltVar := ec))
-                      }
+                    val eltVars = (elts, names).zipped.map { (optEC, name) =>
+                      var eltVar: EmitValue = null
+                      cb += optEC.cases(mb)(
+                        anyEOS := true,
+                        ec => Code(
+                          allEOS := false,
+                          EmitCodeBuilder.scopedVoid(mb) { cb =>
+                            eltVar = cb.memoize(ec, name)
+                          }))
+                      (name, eltVar)
+                    }
+                    val body = emitIR(bodyIR, env = env.bind(eltVars: _*))
 
-                    val bodyEnv = env.bind(names.zip(eltVars): _*)
-                    val body = emitIR(bodyIR, env = bodyEnv)
+                    cb.ifx(anyEOS & !allEOS, cb._fatal("zip: length mismatch"))
 
-                    Code(
-                      allEOS := true,
-                      anyEOS := false,
-                      Code(checkedElts),
-                      (anyEOS & !allEOS).mux[Unit](
-                        Code._fatal[Unit]("zip: length mismatch"),
-                        k(COption(allEOS, body))): Code[Ctrl])
+                    COption(allEOS, body)
                   }
+                  copt.addSetup(setup)
+                }
 
                 // termininate the stream when all streams are EOS
                 val newStream = flagged.take
@@ -1079,35 +1077,29 @@ object EmitStream {
                 // extend to infinite streams, where the COption becomes missing after EOS
                 val extended: IndexedSeq[Stream[COption[EmitCode]]] =
                   streams.zipWithIndex.map { case (stream, i) =>
-                    extendNA(mb, eltTypes(i), stream)
+                    extendNA(mb, stream)
                   }
 
                 // zip to an infinite stream, where the COption is missing when all streams are EOS
-                val flagged: Stream[COption[EmitCode]] = multiZip(extended)
-                  .mapCPS { (_, elts, k) =>
-                    val allEOS = mb.newLocal[Boolean]()
-                    // convert COption[TypedTriplet[_]] to TypedTriplet[_]
+                val flagged: Stream[COption[EmitCode]] = multiZip(extended).map { elts =>
+                  val (setup: Code[Unit], copt) = EmitCodeBuilder.scoped(mb) { cb =>
+                    val allEOS = cb.newLocal[Boolean]("zip_stream_all_eos", true)
+
+                    // convert COption[EmitCode] to EmitCode
                     // where COption encodes if the stream has ended; update
                     // allEOS and anyEOS
-                    val checkedElts: IndexedSeq[EmitCode] =
-                      elts.zip(eltTypes).map { case (optET, t) =>
-                        val optElt =
-                          optET
-                            .flatMapCPS[PCode] { (elt, _, k) =>
-                              Code(allEOS := false,
-                                   k(COption.fromEmitCode(elt)))
-                            }
+                    val eltVars = (elts, names).zipped.map { (optEC, name) =>
+                      val optElt = COption.toEmitCode(optEC.flatMap[PCode] { elt =>
+                        COption.fromEmitCode(elt).addSetup(allEOS := false)
+                      }, mb)
+                      (name, cb.memoize(optElt.copy(pv = optElt.pv.nonRequired), name))
+                    }
+                    val body = emitIR(bodyIR, env = env.bind(eltVars: _*))
 
-                        COption.toEmitCode(optElt, mb)
-                      }
-                    val bodyEnv = env.bind(names.zip(eltVars): _*)
-                    val body = emitIR(bodyIR, env = bodyEnv)
-
-                    Code(
-                      allEOS := true,
-                      Code((eltVars, checkedElts).zipped.map { (v, x) => v := x }),
-                      k(COption(allEOS, body)))
+                    COption(allEOS, body)
                   }
+                  copt.addSetup(setup)
+                }
 
                 // termininate the stream when all streams are EOS
                 val newStream = flagged.take

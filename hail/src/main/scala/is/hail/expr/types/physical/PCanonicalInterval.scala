@@ -22,7 +22,7 @@ final case class PCanonicalInterval(pointType: PType, override val required: Boo
       "includesStart" -> PBooleanRequired,
       "includesEnd" -> PBooleanRequired)
 
-    def setRequired(required: Boolean) = if(required == this.required) this else PCanonicalInterval(this.pointType, required)
+    def setRequired(required: Boolean): PCanonicalInterval = if(required == this.required) this else PCanonicalInterval(this.pointType, required)
 
     def startOffset(off: Code[Long]): Code[Long] = representation.fieldOffset(off, 0)
 
@@ -118,4 +118,7 @@ class PCanonicalIntervalCode(val pt: PCanonicalInterval, val a: Code[Long]) exte
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] =
     pt.constructAtAddress(mb, dst, r, pt, a, deepCopy = false)
+
+  def nonRequired: PCanonicalIntervalCode =
+    new PCanonicalIntervalCode(pt.setRequired(false), a)
 }

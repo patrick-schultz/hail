@@ -617,6 +617,9 @@ class Emit[C](
   private[ir] def emitI(ir: IR, cb: EmitCodeBuilder, env: E, container: Option[AggContainer]): IEmitCode =
     emitI(ir, cb, cb.emb.getCodeParam[Region](1), env, container, None)
 
+  private[ir] def emitIWithRegion(ir: IR, cb: EmitCodeBuilder, region: Value[Region], env: E, container: Option[AggContainer]): IEmitCode =
+    emitI(ir, cb, region, env, container, None)
+
   private def emitI(ir: IR, cb: EmitCodeBuilder, region: Value[Region], env: E,
     container: Option[AggContainer], loopEnv: Option[Env[LoopRef]]
   ): IEmitCode = {
@@ -1245,7 +1248,6 @@ class Emit[C](
         COption.toEmitCode(lenOpt, mb)
 
       case x@StreamFold(a, zero, accumName, valueName, body) =>
-        val eltType = coerce[PStream](a.pType).elementType
         val accType = x.accPType
 
         val streamOpt = emitStream(a)
@@ -1255,15 +1257,12 @@ class Emit[C](
           val xAcc = mb.newEmitField(accumName, accType)
           val tmpAcc = mb.newEmitField(accumName, accType)
 
-          def foldBody(elt: EmitCode): Code[Unit] = {
-            val xElt = mb.newEmitField(valueName, eltType)
-            val bodyenv = env.bind(accumName -> xAcc, valueName -> xElt)
-
-            val codeB = emit(body, env = bodyenv)
-            Code(xElt := elt,
-              tmpAcc := codeB.map(v => accType.copyFromPValue(mb, region, PCode(body.pType, codeB.v))),
-              xAcc := tmpAcc
-            )
+          def foldBody(elt: EmitCode): Code[Unit] = EmitCodeBuilder.scopedVoid(mb) { cb =>
+            val xElt = cb.memoize(elt, "sf_elt")
+            val codeB = emit(body, env = env.bind(accumName -> xAcc, valueName -> xElt))
+            cb.assign(tmpAcc, codeB.map(v => accType.copyFromPValue(mb, region, v)))
+            // get rid of tmpAcc?
+            cb.assign(xAcc, tmpAcc)
           }
 
           val codeZ = emit(zero).map(accType.copyFromPValue(mb, region, _))

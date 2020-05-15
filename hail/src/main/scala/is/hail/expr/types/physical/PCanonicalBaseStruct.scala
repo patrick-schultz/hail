@@ -42,6 +42,8 @@ abstract class PCanonicalBaseStruct(val types: Array[PType]) extends PBaseStruct
     Region.setMemory(structAddress, const(nMissingBytes.toLong), const(if (setMissing) 0xFF.toByte else 0.toByte))
   }
 
+  override def setRequired(required: Boolean): PCanonicalBaseStruct
+
   def isFieldDefined(offset: Long, fieldIdx: Int): Boolean =
     fieldRequired(fieldIdx) || !Region.loadBit(offset, missingIdx(fieldIdx))
 
@@ -279,4 +281,7 @@ class PCanonicalBaseStructCode(val pt: PCanonicalBaseStruct, val a: Code[Long]) 
 
   def store(mb: EmitMethodBuilder[_], r: Value[Region], dst: Code[Long]): Code[Unit] =
     pt.constructAtAddress(mb, dst, r, pt, a, deepCopy = false)
+
+  def nonRequired: PCanonicalBaseStructCode =
+    new PCanonicalBaseStructCode(pt.setRequired(false), a)
 }

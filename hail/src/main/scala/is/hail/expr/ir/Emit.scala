@@ -169,7 +169,8 @@ abstract class EmitValue {
   def get: EmitCode
 }
 
-class EmitUnrealizableValue(val pt: PType, private val ec: EmitCode) extends EmitValue {
+class EmitUnrealizableValue(private val ec: EmitCode) extends EmitValue {
+  val pt = ec.pt
   assert(!pt.isRealizable)
   private var used: Boolean = false
 
@@ -503,7 +504,7 @@ class Emit[C](
             emitStream(value)
               .map(ss => PCanonicalStreamCode(streamType, ss.getStream)),
             mb)
-          val bodyEnv = env.bind(name -> new EmitUnrealizableValue(streamType, valuet))
+          val bodyEnv = env.bind(name -> cb.memoize(valuet, "let"))
 
           emitVoid(body, env = bodyEnv)
 
@@ -959,9 +960,13 @@ class Emit[C](
             emitStream(value)
               .map(ss => PCanonicalStreamCode(streamType, ss.getStream)),
             mb)
-          val bodyEnv = env.bind(name -> new EmitUnrealizableValue(streamType, valuet))
+          val (setup, x) = EmitCodeBuilder.scoped(mb) { cb =>
+            cb.memoize(valuet, "let")
+          }
+          val bodyEnv = env.bind(name -> x)
+          val codeBody = emit(body, env = bodyEnv)
 
-          emit(body, env = bodyEnv)
+          EmitCode(setup, codeBody)
 
         case valueType =>
           val x = mb.newEmitField(name, valueType)
@@ -983,6 +988,7 @@ class Emit[C](
       case ApplyBinaryPrimOp(op, l, r) =>
         val codeL = emit(l)
         val codeR = emit(r)
+        println(s"emitting $op: ${l.pType} - ${r.pType} : ${pt}")
         strict(pt, BinaryOp.emit(op, l.typ, r.typ, codeL.v, codeR.v), codeL, codeR)
       case ApplyUnaryPrimOp(op, x) =>
         val v = emit(x)

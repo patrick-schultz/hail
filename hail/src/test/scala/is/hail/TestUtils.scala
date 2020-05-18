@@ -328,6 +328,8 @@ object TestUtils {
 
     TypeCheck(x, BindingEnv(env.mapValues(_._2), agg = agg.map(_._2.toEnv)))
 
+    println(Pretty(x))
+
     val t = x.typ
     assert(t.typeCheck(expected), s"$t, $expected")
 

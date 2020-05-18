@@ -39,7 +39,9 @@ object BinaryOp {
         val rr = coerce[Int](r)
         op match {
           case Add() => ll + rr
-          case Subtract() => ll - rr
+          case Subtract() =>
+            Code.memoize(ll, "ll") { l => Code.memoize(rr, "rr") { r =>
+            Code(Code._println(const("subtracting ").concat(l.toS).concat(" - ").concat(r.toS)), l - r)}}
           case Multiply() => ll * rr
           case FloatingPointDivide() => ll.toF / rr.toF
           case RoundToNegInfDivide() => Code.invokeStatic2[Math, Int, Int, Int]("floorDiv", ll, rr)

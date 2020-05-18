@@ -1613,16 +1613,16 @@ class IRSuite extends HailSuite {
 //      FastIndexedSeq("i", "range"),
 //      ApplyBinaryPrimOp(Subtract(), streamSumIR(Ref("range", TStream(TInt32))), Ref("i", TInt32)),
 //      ArrayZipBehavior.AssumeSameLength)), FastIndexedSeq(0, 0, 0, 0, 0))
-    assertEvalsTo(ToArray(StreamZip(
-      FastIndexedSeq(MakeStream(FastSeq(0, 1, 2, 3), TStream(TInt32)), rangeIR(5)),
-      FastIndexedSeq("i", "j"),
-      ApplyBinaryPrimOp(Subtract(), Ref("i", TInt32), Ref("j", TInt32)),
-      ArrayZipBehavior.ExtendNA)), FastIndexedSeq(0, 0, 0, 0, null))
-    assertEvalsTo(ToArray(StreamZip(
-      FastIndexedSeq(MakeStream(FastSeq(0, 0, 1, 3, 6, 10), TStream(TInt32)), mapIR(rangeIR(5))(i => rangeIR(i))),
-      FastIndexedSeq("i", "range"),
-      ApplyBinaryPrimOp(Subtract(), streamSumIR(Ref("range", TStream(TInt32))), Ref("i", TInt32)),
-      ArrayZipBehavior.ExtendNA)), FastIndexedSeq(0, 0, 0, 0, 0, null))
+//    assertEvalsTo(ToArray(StreamZip(
+//      FastIndexedSeq(MakeStream(FastSeq(0, 1, 2, 3), TStream(TInt32)), rangeIR(5)),
+//      FastIndexedSeq("i", "j"),
+//      ApplyBinaryPrimOp(Subtract(), Ref("i", TInt32), Ref("j", TInt32)),
+//      ArrayZipBehavior.ExtendNA)), FastIndexedSeq(0, 0, 0, 0, null))
+//    assertEvalsTo(ToArray(StreamZip(
+//      FastIndexedSeq(MakeStream(FastSeq(0, 0, 1, 3, 6, 10), TStream(TInt32)), mapIR(rangeIR(5))(i => rangeIR(i))),
+//      FastIndexedSeq("i", "range"),
+//      ApplyBinaryPrimOp(Subtract(), streamSumIR(Ref("range", TStream(TInt32))), Ref("i", TInt32)),
+//      ArrayZipBehavior.ExtendNA)), FastIndexedSeq(0, 0, 0, 0, 0, null))
     assertEvalsTo(ToArray(StreamZip(
       FastIndexedSeq(MakeStream(FastSeq(0, 0, 1, 3), TStream(TInt32)), mapIR(rangeIR(5))(i => rangeIR(i))),
       FastIndexedSeq("i", "range"),

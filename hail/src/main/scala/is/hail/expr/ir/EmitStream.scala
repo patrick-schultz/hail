@@ -125,18 +125,20 @@ object COption {
     }
   }
 
-  def toEmitCode(opt: COption[PCode], mb: EmitMethodBuilder[_]): EmitCode = {
-    implicit val ctx = EmitStreamContext(mb)
+  def toEmitCode(opt: COption[PCode], mb: EmitMethodBuilder[_]): EmitCode =
+    EmitCode.fromI(mb) { cb => toIEmitCode(opt, cb) }
+
+  def toIEmitCode(opt: COption[PCode], cb: EmitCodeBuilder): IEmitCode = {
+    implicit val ctx = EmitStreamContext(cb.emb)
     val Lmissing = CodeLabel()
     val Lpresent = CodeLabel()
     var value: PCode = null
-    val setup = opt(Lmissing.goto, pc => { value = pc; Lpresent.goto })
+
+    cb += opt(Lmissing.goto, pc => { value = pc; Lpresent.goto })
 
     assert(value != null)
-    EmitCode(
-      Code._empty,
-      new CCode(setup.start, Lmissing.start, Lpresent.start),
-      value)
+
+    IEmitCode(Lmissing, Lpresent, value)
   }
 }
 
@@ -928,17 +930,25 @@ object EmitStream {
           optStream.map { case SizedStream(setup, stream, len) =>
             val newStream = stream.map { eltt => (eltType, bodyIR.pType) match {
               case (eltType: PCanonicalStream, bodyType: PCanonicalStream) =>
-                val bodyenv = env.bind(name -> new EmitUnrealizableValue(eltType, eltt))
+                val (xSetup, x) = EmitCodeBuilder.scoped(mb) { cb =>
+                  cb.memoize(eltt, "strm_map")
+                }
 
                 COption.toEmitCode(
-                  emitStream(bodyIR, env = bodyenv)
-                    .map(ss => PCanonicalStreamCode(bodyType, ss.getStream)),
+                  emitStream(bodyIR, env = env.bind(name -> x))
+                    .map(ss => PCanonicalStreamCode(bodyType, ss.getStream))
+                    .addSetup(xSetup),
                   mb)
               case (eltType: PCanonicalStream, _) =>
-                val bodyenv = env.bind(name -> new EmitUnrealizableValue(eltType, eltt))
+                EmitCode.fromI(mb) { cb =>
+                  val x = cb.memoize(eltt, "strm_map")
 
-                emitIR(bodyIR, env = bodyenv)
+                  emitIR(bodyIR, env = env.bind(name -> x))
+                }
               case (_, bodyType: PCanonicalStream) =>
+                EmitCode.fromI(mb) { cb =>
+                  val xElt = cb.memoize(eltt, "strm_map")
+                }
                 val xElt = mb.newEmitField(name, eltType)
                 val bodyenv = env.bind(name -> xElt)
 
@@ -1094,8 +1104,15 @@ object EmitStream {
                       }, mb)
                       (name, cb.memoize(optElt.copy(pv = optElt.pv.nonRequired), name))
                     }
+                    eltVars.foreach { case (name, eltVar) =>
+                      if (eltVar.pt.isRealizable)
+                        cb += Code._println(const(s"zip body: $name = ").concat(eltVar.m.mux(const("NA"), eltVar.pv.tcode[Int].toS)))
+                      else
+                        cb += Code._println(const(s"zip body: $name is nonrealizable"))
+                    }
                     val body = emitIR(bodyIR, env = env.bind(eltVars: _*))
 
+                    cb += Code._println(const("zip body: allEOS = ").concat(allEOS.toS))
                     COption(allEOS, body)
                   }
                   copt.addSetup(setup)
@@ -1104,9 +1121,10 @@ object EmitStream {
                 // termininate the stream when all streams are EOS
                 val newStream = flagged.take
 
-                val newLength = lengths.reduceLeft(_.liftedZip(_).map {
-                  case (l1, l2) => l1.max(l2)
-                })
+//                val newLength = lengths.reduceLeft(_.liftedZip(_).map {
+//                  case (l1, l2) => l1.max(l2)
+//                })
+                val newLength = None
 
                 SizedStream(lenSetup, newStream, newLength)
             }

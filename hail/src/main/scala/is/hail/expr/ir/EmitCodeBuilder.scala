@@ -62,18 +62,24 @@ class EmitCodeBuilder(val emb: EmitMethodBuilder[_], var code: Code[Unit]) exten
 
   def memoize[T](ec: EmitCode, name: String): EmitValue = {
     if (ec.pt.isRealizable) {
+      println(s"memoizing: name = $name, type = ${ec.pt}")
       val l = emb.newEmitLocal(name, ec.pt)
       append(l := ec)
       l
     } else {
-      new EmitUnrealizableValue(ec.pt, ec)
+      new EmitUnrealizableValue(ec)
     }
   }
 
   def memoizeField[T](ec: EmitCode, name: String): EmitValue = {
-    val l = emb.newEmitField(name, ec.pt)
-    append(l := ec)
-    l
+    if (ec.pt.isRealizable) {
+      println(s"memoizing: name = $name, type = ${ec.pt}")
+      val l = emb.newEmitField(name, ec.pt)
+      append(l := ec)
+      l
+    } else {
+      new EmitUnrealizableValue(ec)
+    }
   }
 
   private def _invoke[T](callee: EmitMethodBuilder[_], args: Param*): Code[T] = {

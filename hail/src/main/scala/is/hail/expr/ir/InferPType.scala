@@ -422,10 +422,14 @@ object InferPType {
         } else zero.pType
 
         PCanonicalStream(elementType = accPType)
-      case StreamLeftJoinDistinct(lIR, rIR, lName, rName, compare, join) =>
+      case StreamJoinRightDistinct(lIR, rIR, lName, rName, compare, join, joinType) =>
         infer(lIR)
         infer(rIR)
-        val e = env.bind(lName -> lIR.pType.asInstanceOf[PStream].elementType, rName -> -rIR.pType.asInstanceOf[PStream].elementType)
+        val lEltType = coerce[PStream](lIR.pType).elementType
+        val rEltType = coerce[PStream](rIR.pType).elementType
+        val e = env.bind(
+          lName -> lEltType.setRequired(joinType == "left"),
+          rName -> rEltType.setRequired(false))
 
         infer(compare, e)
         infer(join, e)

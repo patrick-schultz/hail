@@ -41,6 +41,8 @@ abstract class TableStage(
 
   def partition(ctxRef: Ref): IR
 
+  def ctxType: Type = contexts.typ.asInstanceOf[TStream].elementType
+
   def wrapInBindings(body: IR): IR = {
     letBindings.foldRight(body) { case ((name, binding), soFar) => Let(name, binding, soFar) }
   }
@@ -49,6 +51,47 @@ abstract class TableStage(
     val outer = this
     new TableStage(letBindings, broadcastVals, globals, partitioner, contexts) {
       def partition(ctxRef: Ref): IR = f(outer.partition(ctxRef))
+    }
+  }
+
+  def zipPartitions(right: TableStage, body: (Ref, Ref) => IR): TableStage = {
+    val leftCtxTyp = this.ctxType
+    val rightCtxTyp = right.ctxType
+
+    val leftCtxRef = Ref(genUID(), leftCtxTyp)
+    val rightCtxRef = Ref(genUID(), rightCtxTyp)
+
+    val leftCtxStructField = genUID()
+    val rightCtxStructField = genUID()
+
+    new TableStage(
+      this.letBindings ++ right.letBindings,
+      this.broadcastVals ++ right.broadcastVals,
+      this.globals,
+      this.partitioner,
+      StreamZip(
+        FastIndexedSeq(this.contexts, right.contexts),
+        FastIndexedSeq(leftCtxRef.name, rightCtxRef.name),
+        MakeStruct(FastIndexedSeq(leftCtxStructField -> leftCtxRef,
+                                  rightCtxStructField -> rightCtxRef)),
+        ArrayZipBehavior.AssertSameLength)
+    ) {
+      override def partition(ctxRef: Ref): IR = {
+        bindIR(GetField(ctxRef, leftCtxStructField)) { leftCtxFieldRef =>
+          bindIR(GetField(ctxRef, rightCtxStructField)) { rightCtxFieldRef =>
+            val leftPart = loweredLeft.partition(leftCtxFieldRef)
+            val rightPart = loweredRight.partition(rightCtxFieldRef)
+            val leftElementRef = Ref(genUID(), left.typ.rowType)
+            val rightElementRef = Ref(genUID(), right.typ.rowType)
+
+            val (typeOfRootStruct, _) = right.typ.rowType.filterSet(right.typ.key.toSet, false)
+            val rootStruct = SelectFields(rightElementRef, typeOfRootStruct.fieldNames.toIndexedSeq)
+            val joiningOp = InsertFields(leftElementRef, Seq(root -> rootStruct))
+            StreamJoinRightDistinct(leftPart, rightPart, left.typ.key.take(commonKeyLength), right.typ.key, leftElementRef.name, rightElementRef.name, joiningOp, "left")
+          }
+
+        }
+      }
     }
   }
 
@@ -159,6 +202,49 @@ abstract class TableStage(
           ))
       }
     }
+  }
+
+  def orderedJoin(
+    right: TableStage,
+    joinKey: Int,
+    joinType: String,
+    joiner: IR => IR
+  ): TableStage = {
+    assert(this.partitioner.kType.truncate(joinKey).isIsomorphicTo(right.partitioner.kType.truncate(joinKey)))
+
+    val newPartitioner = {
+      def leftPart: RVDPartitioner = this.partitioner.strictify
+      def rightPart: RVDPartitioner = right.partitioner.coarsen(joinKey).extendKey(this.partitioner.kType)
+      (joinType: @unchecked) match {
+        case "left" => leftPart
+        case "right" => rightPart
+        case "inner" => leftPart.intersect(rightPart)
+        case "outer" => RVDPartitioner.generate(
+          this.partitioner.kType,
+          leftPart.rangeBounds ++ rightPart.rangeBounds)
+      }
+    }
+    val repartitionedLeft: TableStage = this.repartitionNoShuffle(newPartitioner)
+
+    ???
+  }
+
+  // New key type must be prefix of left key type. 'joinKey' must be prefix of
+  // both left key and right key. 'zipper' must take all output key values from
+  // left iterator, and be monotonic on left iterator (it can drop or duplicate
+  // elements of left iterator, or insert new elements in order, but cannot
+  // rearrange them), and output region values must conform to 'newTyp'. The
+  // partitioner of the resulting RVD will be left partitioner truncated
+  // to new key. Each partition will be computed by 'zipper', with corresponding
+  // partition of 'this' as first iterator, and with all rows of 'that' whose
+  // 'joinKey' might match something in partition as the second iterator.
+  def alignAndZipPartitions(right: TableStage, joinKey: Int, newKey: Int, joiner: (Ref, Ref) => IR): TableStage = {
+    require(newKey <= partitioner.kType.size)
+    require(joinKey <= partitioner.kType.size)
+    require(joinKey <= right.partitioner.kType.size)
+
+    val newPartitioner = partitioner.coarsen(newKey)
+    val repartitionedRight = right.repartitionNoShuffle(partitioner.coarsen(joinKey))
   }
 }
 

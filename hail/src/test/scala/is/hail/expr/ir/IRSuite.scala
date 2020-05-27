@@ -2359,16 +2359,13 @@ class IRSuite extends HailSuite {
 
     assertEvalsTo(leftJoinRows(Array[Integer](0, null), Array[Integer](1, null)), FastIndexedSeq(
       Row(0, "x", 0L, null, null),
-      Row(null, "x", 1L, 1, "foo")))
-
-    assertEvalsTo(leftJoinRows(Array[Integer](0, null), Array[Integer](1, null)), FastIndexedSeq(
-      Row(0, "x", 0L, null, null),
-      Row(null, "x", 1L, 1, "foo")))
+      Row(null, "x", 1L, null, null)))
 
     assertEvalsTo(outerJoinRows(Array[Integer](0, null), Array[Integer](1, null)), FastIndexedSeq(
       Row(0, "x", 0L, null, null),
       Row(1, "x", null, 0, "foo"),
-      Row(null, "x", 1L, 1, "foo")))
+      Row(null, "x", 1L, null, null),
+      Row(null, "x", null, 1, "foo")))
 
     assertEvalsTo(leftJoinRows(Array[Integer](0, 1, 2), Array[Integer](1)), FastIndexedSeq(
       Row(0, "x", 0L, null, null),

@@ -361,7 +361,7 @@ abstract class ExtendedOrdering extends Serializable {
       if (x == null)
         true
       else
-        gtNonnull(x, y)
+        gteqNonnull(x, y)
     }
   }
 

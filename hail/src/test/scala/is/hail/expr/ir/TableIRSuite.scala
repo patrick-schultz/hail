@@ -305,6 +305,17 @@ class TableIRSuite extends HailSuite {
     ("inner", (row: Row) => !row.isNullAt(1) && !row.isNullAt(3))
   )
 
+  @DataProvider(name = "lowered join")
+  def loweredJoinData(): Array[Array[Any]] =
+    for {
+      lParts <- Array[Integer](2) //(1, 2, 3)
+      rParts <- Array[Integer](1) //(1, 2, 3)
+      (j, p) <- joinTypes
+      leftProject <- Seq[Set[Int]](Set(), Set(1), Set(2), Set(1, 2))
+      rightProject <- Seq[Set[Int]](Set(), Set(1), Set(2), Set(1, 2))
+      if !leftProject.contains(1) || rightProject.contains(1)
+    } yield Array[Any](lParts, rParts, j, p, leftProject, rightProject)
+
   @DataProvider(name = "join")
   def joinData(): Array[Array[Any]] =
     for {
@@ -316,52 +327,53 @@ class TableIRSuite extends HailSuite {
       if !leftProject.contains(1) || rightProject.contains(1)
     } yield Array[Any](l, r, j, p, leftProject, rightProject)
 
-  @Test(dataProvider = "join")
+  @Test(dataProvider = "lowered join")
   def testTableJoin(
-    leftPart: RVDPartitioner,
-    rightPart: RVDPartitioner,
+    lParts: Int,
+    rParts: Int,
+//    leftPart: RVDPartitioner,
+//    rightPart: RVDPartitioner,
     joinType: String,
     pred: Row => Boolean,
     leftProject: Set[Int],
     rightProject: Set[Int]
   ) {
-    implicit val execStrats = ExecStrategy.interpretOnly
+//    implicit val execStrats = ExecStrategy.interpretOnly
+    implicit val execStrats = ExecStrategy.lowering
     val (leftType, leftProjectF) = rowType.filter(f => !leftProject.contains(f.index))
-    val left = Interpret(TableKeyBy(
+    val left = TableKeyBy(
       TableParallelize(
         Literal(
           TStruct("rows" -> TArray(leftType), "global" -> TStruct.empty),
           Row(leftData.map(leftProjectF.asInstanceOf[Row => Row]), Row())),
-        Some(1)),
-      if (!leftProject.contains(1)) FastIndexedSeq("A", "B") else FastIndexedSeq("A")),
-      ctx,
-      optimize = false)
-    val partitionedLeft = left.copy(rvd = left.rvd
-      .repartition(ctx, if (!leftProject.contains(1)) leftPart else leftPart.coarsen(1))
-    )
+        Some(lParts)),
+      if (!leftProject.contains(1)) FastIndexedSeq("A", "B") else FastIndexedSeq("A"),
+      isSorted = true)
+//    val partitionedLeft = left.copy(rvd = left.rvd
+//      .repartition(ctx, if (!leftProject.contains(1)) leftPart else leftPart.coarsen(1))
+//    )
 
     val (rightType, rightProjectF) = rowType.filter(f => !rightProject.contains(f.index))
-    val right = Interpret(TableKeyBy(
+    val right = TableKeyBy(
       TableParallelize(
         Literal(
           TStruct("rows" -> TArray(rightType), "global" -> TStruct.empty),
           Row(rightData.map(rightProjectF.asInstanceOf[Row => Row]), Row())),
         Some(1)),
-      if (!rightProject.contains(1)) FastIndexedSeq("A", "B") else FastIndexedSeq("A")),
-      ctx,
-      optimize = false)
-    val partitionedRight = right.copy(
-      rvd = right.rvd
-        .repartition(ctx, if (!rightProject.contains(1)) rightPart else rightPart.coarsen(1)))
+      if (!rightProject.contains(1)) FastIndexedSeq("A", "B") else FastIndexedSeq("A"),
+      isSorted = true)
+//    val partitionedRight = right.copy(
+//      rvd = right.rvd
+//        .repartition(ctx, if (!rightProject.contains(1)) rightPart else rightPart.coarsen(1)))
 
     val (_, joinProjectF) = joinedType.filter(f => !leftProject.contains(f.index) && !rightProject.contains(f.index - 2))
     val joined = collect(
       TableJoin(
-        TableLiteral(partitionedLeft),
+        left,
         TableRename(
-          TableLiteral(partitionedRight),
+          right,
           Array("A", "B", "C")
-            .filter(partitionedRight.typ.rowType.hasField)
+            .filter(right.typ.rowType.hasField)
             .map(a => a -> (a + "_"))
             .toMap,
           Map.empty),

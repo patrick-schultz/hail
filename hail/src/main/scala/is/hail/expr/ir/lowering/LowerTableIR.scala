@@ -19,43 +19,61 @@ object TableStage {
     globals: IR,
     partitioner: RVDPartitioner,
     contexts: IR,
-    body: (IR) => IR): TableStage = {
+    body: (Ref) => IR): TableStage = {
     val globalsID = genUID()
-    new TableStage(
+    TableStage(
       FastIndexedSeq(globalsID -> globals),
       Set(globalsID),
       Ref(globalsID, globals.typ),
       partitioner,
-      contexts) {
-      def partition(ctxRef: Ref): IR = body(ctxRef)
-    }
+      contexts,
+      body)
+  }
+
+  def apply(
+    letBindings: IndexedSeq[(String, IR)],
+    broadcastVals: Set[String],
+    globals: IR,
+    partitioner: RVDPartitioner,
+    contexts: IR,
+    partition: Ref => IR
+  ): TableStage = {
+    val ctxType = contexts.typ.asInstanceOf[TStream].elementType
+    val ctxRef = Ref(genUID(), ctxType)
+
+    new TableStage(letBindings, broadcastVals, globals, partitioner, contexts, ctxRef.name, partition(ctxRef))
   }
 }
 
-abstract class TableStage(
+class TableStage(
   val letBindings: IndexedSeq[(String, IR)],
   val broadcastVals: Set[String],
   val globals: IR,
   val partitioner: RVDPartitioner,
-  val contexts: IR) { self =>
-
-  def partition(ctxRef: Ref): IR
+  val contexts: IR,
+  val ctxRefName: String,
+  val partitionIR: IR) { self =>
 
   def ctxType: Type = contexts.typ.asInstanceOf[TStream].elementType
+  def rowType: TStruct = partitionIR.typ.asInstanceOf[TStruct]
+
+  def partition(ctx: IR): IR = {
+    require(ctx.typ == ctxType)
+    Let(ctxRefName, ctx, partitionIR)
+  }
+
+  require(partitioner.kType.fields.forall(f => rowType.field(f.name).typ == f.typ))
 
   def wrapInBindings(body: IR): IR = {
     letBindings.foldRight(body) { case ((name, binding), soFar) => Let(name, binding, soFar) }
   }
 
-  def mapPartition(f: IR => IR): TableStage = {
-    val outer = this
-    new TableStage(letBindings, broadcastVals, globals, partitioner, contexts) {
-      def partition(ctxRef: Ref): IR = f(outer.partition(ctxRef))
-    }
-  }
+  def mapPartition(f: IR => IR): TableStage =
+    new TableStage(letBindings, broadcastVals, globals, partitioner, contexts, ctxRefName, f(partitionIR))
 
-  def zipPartitions(right: TableStage, body: (Ref, Ref) => IR): TableStage = {
-    val leftCtxTyp = this.ctxType
+  def zipPartitions(right: TableStage, body: (IR, IR) => IR): TableStage = {
+    val left = this
+    val leftCtxTyp = left.ctxType
     val rightCtxTyp = right.ctxType
 
     val leftCtxRef = Ref(genUID(), leftCtxTyp)
@@ -64,55 +82,47 @@ abstract class TableStage(
     val leftCtxStructField = genUID()
     val rightCtxStructField = genUID()
 
-    new TableStage(
-      this.letBindings ++ right.letBindings,
-      this.broadcastVals ++ right.broadcastVals,
-      this.globals,
-      this.partitioner,
-      StreamZip(
-        FastIndexedSeq(this.contexts, right.contexts),
-        FastIndexedSeq(leftCtxRef.name, rightCtxRef.name),
-        MakeStruct(FastIndexedSeq(leftCtxStructField -> leftCtxRef,
-                                  rightCtxStructField -> rightCtxRef)),
-        ArrayZipBehavior.AssertSameLength)
-    ) {
-      override def partition(ctxRef: Ref): IR = {
-        bindIR(GetField(ctxRef, leftCtxStructField)) { leftCtxFieldRef =>
-          bindIR(GetField(ctxRef, rightCtxStructField)) { rightCtxFieldRef =>
-            val leftPart = loweredLeft.partition(leftCtxFieldRef)
-            val rightPart = loweredRight.partition(rightCtxFieldRef)
-            val leftElementRef = Ref(genUID(), left.typ.rowType)
-            val rightElementRef = Ref(genUID(), right.typ.rowType)
+    val zippedCtxs = StreamZip(
+      FastIndexedSeq(left.contexts, right.contexts),
+      FastIndexedSeq(leftCtxRef.name, rightCtxRef.name),
+      MakeStruct(FastIndexedSeq(leftCtxStructField -> leftCtxRef,
+                                rightCtxStructField -> rightCtxRef)),
+      ArrayZipBehavior.AssertSameLength)
 
-            val (typeOfRootStruct, _) = right.typ.rowType.filterSet(right.typ.key.toSet, false)
-            val rootStruct = SelectFields(rightElementRef, typeOfRootStruct.fieldNames.toIndexedSeq)
-            val joiningOp = InsertFields(leftElementRef, Seq(root -> rootStruct))
-            StreamJoinRightDistinct(leftPart, rightPart, left.typ.key.take(commonKeyLength), right.typ.key, leftElementRef.name, rightElementRef.name, joiningOp, "left")
+    TableStage(
+      left.letBindings ++ right.letBindings,
+      left.broadcastVals ++ right.broadcastVals,
+      left.globals,
+      left.partitioner,
+      zippedCtxs,
+      ctxRef => {
+        bindIR(left.partition(GetField(ctxRef, leftCtxStructField))) { lPart =>
+          bindIR(right.partition(GetField(ctxRef, rightCtxStructField))) { rPart =>
+            body(lPart, rPart)
           }
-
         }
-      }
-    }
+      })
   }
 
   def mapContexts(f: IR => IR): TableStage = {
-    val outer = this
-    new TableStage(letBindings, broadcastVals, globals, partitioner, f(contexts)) {
-      override def partition(ctxRef: Ref): IR = outer.partition(ctxRef)
-    }
+    val newContexts = f(contexts)
+    assert(newContexts.typ == contexts.typ)
+
+    new TableStage(letBindings, broadcastVals, globals, partitioner, newContexts, ctxRefName, partitionIR)
   }
 
   def mapGlobals(f: IR => IR): TableStage = {
     val newGlobals = f(globals)
     val newID = genUID()
-    val outer = this
+
     new TableStage(
       letBindings :+ newID -> newGlobals,
       broadcastVals + newID,
       Ref(newID, newGlobals.typ),
-      partitioner, contexts) {
-      def partition(ctxRef: Ref): IR = outer.partition(ctxRef)
-    }
+      partitioner,
+      contexts,
+      ctxRefName,
+      partitionIR)
   }
 
   def collect(bind: Boolean = true): IR = {
@@ -133,11 +143,8 @@ abstract class TableStage(
         "global" -> mapped.globals)))
   }
 
-  def changePartitionerNoRepartition(newPartitioner: RVDPartitioner): TableStage = {
-    new TableStage(letBindings, broadcastVals, globals, newPartitioner, contexts) {
-      def partition(ctxRef: Ref): IR = self.partition(ctxRef)
-    }
-  }
+  def changePartitionerNoRepartition(newPartitioner: RVDPartitioner): TableStage =
+    new TableStage(letBindings, broadcastVals, globals, newPartitioner, contexts, ctxRefName, partitionIR)
 
   def repartitionNoShuffle(newPartitioner: RVDPartitioner): TableStage = {
     require(newPartitioner.satisfiesAllowedOverlap(newPartitioner.kType.size - 1))
@@ -181,8 +188,9 @@ abstract class TableStage(
     val intervalUID = genUID()
     val eltUID = genUID()
     val prevContextUIDPartition = genUID()
-    new TableStage(letBindings, broadcastVals, globals, newPartitioner, newContexts) {
-      override def partition(ctxRef: Ref): IR = {
+
+    TableStage(letBindings, broadcastVals, globals, newPartitioner, newContexts,
+      ctxRef => {
         val body = self.partition(Ref(prevContextUIDPartition, self.contexts.typ.asInstanceOf[TStream].elementType))
         Let(
           intervalUID,
@@ -200,15 +208,14 @@ abstract class TableStage(
               SelectFields(Ref(eltUID, body.typ.asInstanceOf[TStream].elementType), partitioner.kType.fieldNames)
             )
           ))
-      }
-    }
+      })
   }
 
   def orderedJoin(
     right: TableStage,
     joinKey: Int,
     joinType: String,
-    joiner: IR => IR
+    joiner: (Ref, Ref) => IR
   ): TableStage = {
     assert(this.partitioner.kType.truncate(joinKey).isIsomorphicTo(right.partitioner.kType.truncate(joinKey)))
 
@@ -226,7 +233,24 @@ abstract class TableStage(
     }
     val repartitionedLeft: TableStage = this.repartitionNoShuffle(newPartitioner)
 
-    ???
+    val partitionJoiner: (IR, IR) => IR = (lPart, rPart) => {
+      val lEltType = lPart.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct]
+      val rEltType = rPart.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct]
+
+      val lKey = this.partitioner.kType.fieldNames.take(joinKey)
+      val rKey = right.partitioner.kType.fieldNames.take(joinKey)
+
+      val lEltRef = Ref(genUID(), lEltType)
+      val rEltRef = Ref(genUID(), rEltType)
+
+      StreamJoin(lPart, rPart, lKey, rKey, lEltRef.name, rEltRef.name, joiner(lEltRef, rEltRef), joinType)
+    }
+
+    repartitionedLeft.alignAndZipPartitions(
+      right,
+      joinKey,
+      repartitionedLeft.partitioner.kType.size,
+      partitionJoiner)
   }
 
   // New key type must be prefix of left key type. 'joinKey' must be prefix of
@@ -238,13 +262,17 @@ abstract class TableStage(
   // to new key. Each partition will be computed by 'zipper', with corresponding
   // partition of 'this' as first iterator, and with all rows of 'that' whose
   // 'joinKey' might match something in partition as the second iterator.
-  def alignAndZipPartitions(right: TableStage, joinKey: Int, newKey: Int, joiner: (Ref, Ref) => IR): TableStage = {
+  def alignAndZipPartitions(right: TableStage, joinKey: Int, newKey: Int, joiner: (IR, IR) => IR): TableStage = {
     require(newKey <= partitioner.kType.size)
     require(joinKey <= partitioner.kType.size)
     require(joinKey <= right.partitioner.kType.size)
 
     val newPartitioner = partitioner.coarsen(newKey)
-    val repartitionedRight = right.repartitionNoShuffle(partitioner.coarsen(joinKey))
+    val leftKeyToRightKeyMap = partitioner.kType.fieldNames.zip(right.partitioner.kType.fieldNames).toMap
+    val newRightPartitioner = partitioner.coarsen(joinKey).rename(leftKeyToRightKeyMap)
+    val repartitionedRight = right.repartitionNoShuffle(newRightPartitioner)
+    zipPartitions(repartitionedRight, joiner)
+      .changePartitionerNoRepartition(newPartitioner)
   }
 }
 
@@ -260,14 +288,14 @@ object LowerTableIR {
           if (dropRows) {
             val globals = reader.lowerGlobals(ctx, typ.globalType)
             val globalsID = genUID()
-            new TableStage(
+
+            TableStage(
               FastIndexedSeq(globalsID -> globals),
               Set(globalsID),
               Ref(globalsID, globals.typ),
               RVDPartitioner.empty(typ.keyType),
-              MakeStream(FastIndexedSeq(), TStream(TStruct.empty))) {
-              def partition(ctxRef: Ref): IR = MakeStream(FastIndexedSeq(), TStream(typ.rowType))
-            }
+              MakeStream(FastIndexedSeq(), TStream(TStruct.empty)),
+              _ => MakeStream(FastIndexedSeq(), TStream(typ.rowType)))
           } else
             reader.lower(ctx, typ)
 
@@ -593,8 +621,6 @@ object LowerTableIR {
           }
 
         case TableLeftJoinRightDistinct(left, right, root) =>
-          require(right.typ.keyType isPrefixOf left.typ.keyType)
-
           val commonKeyLength = right.typ.keyType.size
           val loweredLeft = lower(left)
           val leftKeyToRightKeyMap = left.typ.keyType.fieldNames.zip(right.typ.keyType.fieldNames).toMap
@@ -602,41 +628,34 @@ object LowerTableIR {
             .rename(leftKeyToRightKeyMap)
           val loweredRight = lower(right).repartitionNoShuffle(newRightPartitioner)
 
-          val leftCtxTyp = loweredLeft.contexts.typ.asInstanceOf[TStream].elementType
-          val rightCtxTyp = loweredRight.contexts.typ.asInstanceOf[TStream].elementType
-          val leftCtxRef = Ref(genUID(), leftCtxTyp)
-          val rightCtxRef = Ref(genUID(), rightCtxTyp)
+          loweredLeft.zipPartitions(loweredRight, (leftPart, rightPart) => {
+            val leftElementRef = Ref(genUID(), left.typ.rowType)
+            val rightElementRef = Ref(genUID(), right.typ.rowType)
 
-          val leftCtxStructField = genUID()
-          val rightCtxStructField = genUID()
+            val (typeOfRootStruct, _) = right.typ.rowType.filterSet(right.typ.key.toSet, false)
+            val rootStruct = SelectFields(rightElementRef, typeOfRootStruct.fieldNames.toIndexedSeq)
+            val joiningOp = InsertFields(leftElementRef, Seq(root -> rootStruct))
+            StreamJoinRightDistinct(leftPart, rightPart, left.typ.key.take(commonKeyLength), right.typ.key, leftElementRef.name, rightElementRef.name, joiningOp, "left")
+          })
 
-          new TableStage(
-            loweredLeft.letBindings ++ loweredRight.letBindings,
-            loweredLeft.broadcastVals ++ loweredRight.broadcastVals,
-            loweredLeft.globals,
-            loweredLeft.partitioner,
-            StreamZip(
-              FastIndexedSeq(loweredLeft.contexts, loweredRight.contexts), FastIndexedSeq(leftCtxRef.name, rightCtxRef.name),
-              MakeStruct(FastIndexedSeq(leftCtxStructField -> leftCtxRef, rightCtxStructField -> rightCtxRef)), ArrayZipBehavior.AssertSameLength
-            )
-          ) {
-            override def partition(ctxRef: Ref): IR = {
-              bindIR(GetField(ctxRef, leftCtxStructField)) { leftCtxFieldRef =>
-                bindIR(GetField(ctxRef, rightCtxStructField)) { rightCtxFieldRef =>
-                  val leftPart = loweredLeft.partition(leftCtxFieldRef)
-                  val rightPart = loweredRight.partition(rightCtxFieldRef)
-                  val leftElementRef = Ref(genUID(), left.typ.rowType)
-                  val rightElementRef = Ref(genUID(), right.typ.rowType)
+        case TableJoin(left, right, joinType, joinKey) if joinType != "zip" =>
+          val loweredLeft = lower(left)
+          val loweredRight = lower(right)
 
-                  val (typeOfRootStruct, _) = right.typ.rowType.filterSet(right.typ.key.toSet, false)
-                  val rootStruct = SelectFields(rightElementRef, typeOfRootStruct.fieldNames.toIndexedSeq)
-                  val joiningOp = InsertFields(leftElementRef, Seq(root -> rootStruct))
-                  StreamJoinRightDistinct(leftPart, rightPart, left.typ.key.take(commonKeyLength), right.typ.key, leftElementRef.name, rightElementRef.name, joiningOp, "left")
-                }
+          val lKeyFields = left.typ.key.take(joinKey)
+          val lValueFields = left.typ.rowType.fieldNames.filter(f => !lKeyFields.contains(f))
+          val rKeyFields = right.typ.key.take(joinKey)
+          val rValueFields = right.typ.rowType.fieldNames.filter(f => !rKeyFields.contains(f))
 
+          loweredLeft.orderedJoin(loweredRight, joinKey, joinType, (lEltRef, rEltRef) => {
+            MakeStruct(
+              (lKeyFields, rKeyFields).zipped.map { (lKey, rKey) =>
+                lKey -> Coalesce(FastSeq(GetField(lEltRef, lKey), GetField(rEltRef, rKey)))
               }
-            }
-          }
+                ++ lValueFields.map(f => f -> GetField(lEltRef, f))
+                ++ rValueFields.map(f => f -> GetField(rEltRef, f)))
+          })
+
         case TableOrderBy(child, sortFields) =>
           val loweredChild = lower(child)
           if (TableOrderBy.isAlreadyOrdered(sortFields, loweredChild.partitioner.kType.fieldNames))

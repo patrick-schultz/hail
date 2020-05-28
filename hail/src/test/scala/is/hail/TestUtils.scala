@@ -373,6 +373,8 @@ object TestUtils {
               loweredExecute(x, env, args, agg)
           }
           assert(t.typeCheck(res))
+          if (!t.valuesSimilar(res, expected))
+            println("")
           assert(t.valuesSimilar(res, expected), s"\n  result=$res\n  expect=$expected\n  strategy=$strat)")
         } catch {
           case e: Exception =>

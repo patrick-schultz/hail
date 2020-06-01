@@ -35,9 +35,16 @@ object LowerDistributedSort {
       if (so == Ascending) fo else fo.reverse
     }.toArray
 
+    val getSortKey: Any => Any = {
+      val idxs: Array[Int] = sortFields.map { case SortField(n, _) =>
+        rowType.fieldIdx(n)
+      }.toArray
+      row => Row(idxs.map(row.asInstanceOf[Row].apply): _*)
+    }
+
     val ord: Ordering[Annotation] = ExtendedOrdering.rowOrdering(sortColIndexOrd).toOrdering
     val rows = rowsAndGlobal.getAs[IndexedSeq[Annotation]](0)
-    val sortedRows = ctx.timer.time("LowerDistributedSort.localSort.sort")(rows.sorted(ord))
+    val sortedRows = ctx.timer.time("LowerDistributedSort.localSort.sort")(rows.sortBy(getSortKey)(ord))
     val nPartitionsAdj = math.max(math.min(sortedRows.length, numPartitions), 1)
     val itemsPerPartition = (sortedRows.length.toDouble / nPartitionsAdj).ceil.toInt
 

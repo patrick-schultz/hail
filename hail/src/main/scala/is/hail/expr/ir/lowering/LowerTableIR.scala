@@ -5,6 +5,7 @@ import is.hail.types
 import is.hail.types.virtual._
 import is.hail.methods.{ForceCountTable, NPartitionsTable}
 import is.hail.rvd.{AbstractRVDSpec, RVDPartitioner}
+import is.hail.types.TableType
 import is.hail.utils._
 import org.apache.spark.sql.Row
 
@@ -56,15 +57,19 @@ class TableStage(
 
   def ctxType: Type = contexts.typ.asInstanceOf[TStream].elementType
   def rowType: TStruct = partitionIR.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct]
+  def kType: TStruct = partitioner.kType
+  def key: IndexedSeq[String] = kType.fieldNames
+  def globalType: TStruct = globals.typ.asInstanceOf[TStruct]
+  def tableType: TableType = TableType(rowType, key, globalType)
 
-  assert(partitioner.kType.fields.forall(f => rowType.field(f.name).typ == f.typ))
+  assert(kType.fields.forall(f => rowType.field(f.name).typ == f.typ))
 
   def partition(ctx: IR): IR = {
     require(ctx.typ == ctxType)
     Let(ctxRefName, ctx, partitionIR)
   }
 
-  require(partitioner.kType.fields.forall(f => rowType.field(f.name).typ == f.typ))
+  require(kType.fields.forall(f => rowType.field(f.name).typ == f.typ))
 
   def wrapInBindings(body: IR): IR = {
     letBindings.foldRight(body) { case ((name, binding), soFar) => Let(name, binding, soFar) }
@@ -149,10 +154,8 @@ class TableStage(
     new TableStage(letBindings, broadcastVals, globals, newPartitioner, contexts, ctxRefName, partitionIR)
 
   def repartitionNoShuffle(newPartitioner: RVDPartitioner): TableStage = {
-    if (!newPartitioner.satisfiesAllowedOverlap(newPartitioner.kType.size - 1))
-      println("")
     require(newPartitioner.satisfiesAllowedOverlap(newPartitioner.kType.size - 1))
-    require(newPartitioner.kType.isPrefixOf(partitioner.kType))
+    require(newPartitioner.kType.isPrefixOf(kType))
 
     val boundType = RVDPartitioner.intervalIRRepresentation(newPartitioner.kType)
     val partitionMapping: IndexedSeq[Row] = newPartitioner.rangeBounds.map { i =>
@@ -215,6 +218,42 @@ class TableStage(
       })
   }
 
+  def changeKey(execCtx: ExecuteContext, newKey: IndexedSeq[String]): TableStage = {
+    val sorted = execCtx.backend.lowerDistributedSort(execCtx, this, newKey.map(k => SortField(k, Ascending)))
+    assert(sorted.kType.fieldNames.sameElements(newKey))
+    sorted
+  }
+
+  def extendKeyPreservesPartitioning(newKey: IndexedSeq[String]): TableStage = {
+    require(newKey startsWith kType.fieldNames)
+    require(newKey.forall(rowType.fieldNames.contains))
+
+    val newKeyType = rowType.typeAfterSelectNames(newKey)
+    if (RVDPartitioner.isValid(newKeyType, partitioner.rangeBounds)) {
+      changePartitionerNoRepartition(partitioner.copy(kType = newKeyType))
+    } else {
+      val adjustedPartitioner = partitioner.strictify
+      repartitionNoShuffle(adjustedPartitioner)
+        .changePartitionerNoRepartition(adjustedPartitioner.copy(kType = newKeyType))
+    }
+  }
+
+  // Return TableStage whose key equals or at least starts with 'newKey'.
+  def enforceKey(execCtx: ExecuteContext, newKey: IndexedSeq[String], isSorted: Boolean = false): TableStage = {
+    require(newKey.forall(rowType.hasField))
+    val nPreservedFields = kType.fieldNames.zip(newKey).takeWhile { case (l, r) => l == r }.length
+    require(!isSorted || nPreservedFields > 0 || newKey.isEmpty)
+
+    if (nPreservedFields == newKey.length)
+      this
+    else if (isSorted)
+      changePartitionerNoRepartition(partitioner.coarsen(nPreservedFields))
+        .extendKeyPreservesPartitioning(newKey)
+//        .checkKeyOrdering()
+    else
+      changeKey(execCtx, newKey)
+  }
+
   def orderedJoin(
     right: TableStage,
     joinKey: Int,
@@ -222,17 +261,17 @@ class TableStage(
     globalJoiner: (IR, IR) => IR,
     joiner: (Ref, Ref) => IR
   ): TableStage = {
-    assert(this.partitioner.kType.truncate(joinKey).isIsomorphicTo(right.partitioner.kType.truncate(joinKey)))
+    assert(this.kType.truncate(joinKey).isIsomorphicTo(right.kType.truncate(joinKey)))
 
     val newPartitioner = {
       def leftPart: RVDPartitioner = this.partitioner.strictify
-      def rightPart: RVDPartitioner = right.partitioner.coarsen(joinKey).extendKey(this.partitioner.kType)
+      def rightPart: RVDPartitioner = right.partitioner.coarsen(joinKey).extendKey(this.kType)
       (joinType: @unchecked) match {
         case "left" => leftPart
         case "right" => rightPart
         case "inner" => leftPart.intersect(rightPart)
         case "outer" => RVDPartitioner.generate(
-          this.partitioner.kType,
+          this.kType,
           leftPart.rangeBounds ++ rightPart.rangeBounds)
       }
     }
@@ -242,8 +281,8 @@ class TableStage(
       val lEltType = lPart.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct]
       val rEltType = rPart.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct]
 
-      val lKey = this.partitioner.kType.fieldNames.take(joinKey)
-      val rKey = right.partitioner.kType.fieldNames.take(joinKey)
+      val lKey = this.kType.fieldNames.take(joinKey)
+      val rKey = right.kType.fieldNames.take(joinKey)
 
       val lEltRef = Ref(genUID(), lEltType)
       val rEltRef = Ref(genUID(), rEltType)
@@ -251,12 +290,15 @@ class TableStage(
       StreamJoin(lPart, rPart, lKey, rKey, lEltRef.name, rEltRef.name, joiner(lEltRef, rEltRef), joinType)
     }
 
+    val newKey = kType.fieldNames ++ right.kType.fieldNames.drop(joinKey)
+
     repartitionedLeft.alignAndZipPartitions(
       right,
       joinKey,
-      repartitionedLeft.partitioner.kType.size,
+      repartitionedLeft.kType.size,
       globalJoiner,
       partitionJoiner)
+      .extendKeyPreservesPartitioning(newKey)
   }
 
   // New key type must be prefix of left key type. 'joinKey' must be prefix of
@@ -275,12 +317,12 @@ class TableStage(
     globalJoiner: (IR, IR) => IR,
     joiner: (IR, IR) => IR
   ): TableStage = {
-    require(newKey <= partitioner.kType.size)
-    require(joinKey <= partitioner.kType.size)
-    require(joinKey <= right.partitioner.kType.size)
+    require(newKey <= kType.size)
+    require(joinKey <= kType.size)
+    require(joinKey <= right.kType.size)
 
     val newPartitioner = partitioner.coarsen(newKey)
-    val leftKeyToRightKeyMap = partitioner.kType.fieldNames.zip(right.partitioner.kType.fieldNames).toMap
+    val leftKeyToRightKeyMap = kType.fieldNames.zip(right.kType.fieldNames).toMap
     val newRightPartitioner = partitioner.coarsen(joinKey).strictify.rename(leftKeyToRightKeyMap)
     val repartitionedRight = right.repartitionNoShuffle(newRightPartitioner)
     zipPartitions(repartitionedRight, globalJoiner, joiner)
@@ -295,7 +337,8 @@ object LowerTableIR {
     def lower(tir: TableIR): TableStage = {
       if (typesToLower == DArrayLowering.BMOnly)
         throw new LowererUnsupportedOperation("found TableIR in lowering; lowering only BlockMatrixIRs.")
-      tir match {
+
+      val lowered = tir match {
         case TableRead(typ, dropRows, reader) =>
           if (dropRows) {
             val globals = reader.lowerGlobals(ctx, typ.globalType)
@@ -600,27 +643,9 @@ object LowerTableIR {
             withKeys
           }
 
-        case t@TableKeyBy(child, newKey, isSorted: Boolean) =>
+        case TableKeyBy(child, newKey, isSorted: Boolean) =>
           val loweredChild = lower(child)
-          val nPreservedFields = loweredChild.partitioner.kType.fieldNames
-            .zip(newKey)
-            .takeWhile { case (l, r) => l == r }
-            .length
-
-          if (nPreservedFields == newKey.length)
-            loweredChild
-          else if (isSorted && nPreservedFields > 0) {
-            val newPartitioner = loweredChild.partitioner
-              .coarsen(nPreservedFields)
-              .strictify
-            loweredChild
-              .repartitionNoShuffle(newPartitioner)
-              .changePartitionerNoRepartition(newPartitioner.extendKey(t.typ.keyType))
-          } else {
-            val sorted = ctx.backend.lowerDistributedSort(ctx, loweredChild, newKey.map(k => SortField(k, Ascending)))
-            assert(sorted.partitioner.kType.fieldNames.sameElements(newKey))
-            sorted
-          }
+          loweredChild.enforceKey(ctx, newKey, isSorted)
 
         case TableLeftJoinRightDistinct(left, right, root) =>
           val commonKeyLength = right.typ.keyType.size
@@ -712,7 +737,7 @@ object LowerTableIR {
             loweredChild.letBindings :+ newGlobId -> newGlobals,
             loweredChild.broadcastVals + newGlobId,
             Ref(newGlobId, newGlobals.typ),
-            loweredChild.partitioner.copy(kType = loweredChild.partitioner.kType.rename(rowMap)),
+            loweredChild.partitioner.copy(kType = loweredChild.kType.rename(rowMap)),
             loweredChild.contexts,
             ctxRef => mapIR(loweredChild.partition(ctxRef)) { row =>
               CastRename(row, row.typ.asInstanceOf[TStruct].rename(rowMap))
@@ -721,6 +746,12 @@ object LowerTableIR {
         case node =>
           throw new LowererUnsupportedOperation(s"undefined: \n${ Pretty(node) }")
       }
+
+      assert(tir.typ.globalType == lowered.globalType, s"\n  ir global: ${tir.typ.globalType}\n  lowered global: ${lowered.globalType}")
+      assert(tir.typ.rowType == lowered.rowType, s"\n  ir row: ${tir.typ.rowType}\n  lowered row: ${lowered.rowType}")
+      assert(lowered.key startsWith tir.typ.keyType.fieldNames, s"\n  ir key: ${tir.typ.keyType.fieldNames}\n  lowered key: ${lowered.key}")
+
+      lowered
     }
 
     ir match {

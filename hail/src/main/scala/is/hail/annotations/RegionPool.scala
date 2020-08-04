@@ -56,11 +56,50 @@ final class MemoryList(var head: MemoryHandle, var tail: MemoryHandle, var size:
     }
 }
 
+object RegionMemoryList {
+  def empty: RegionMemoryList = new RegionMemoryList(null, null, 0)
+}
+
+final class RegionMemoryList(var head: RegionMemory, var tail: RegionMemory, var size: Int) {
+  @inline def pop(): RegionMemory = {
+    val ret = head
+    head = head.next
+    if (head == null)
+      tail = null
+    ret.next = null
+    size -= 1
+    ret
+  }
+
+  @inline def +=(mem: RegionMemory): Unit = {
+    if (head == null) {
+      tail = mem
+    }
+    mem.next = head
+    head = mem
+    size += 1
+  }
+
+  @inline def ++=(mems: RegionMemoryList): Unit =
+    if (mems.head != null) {
+      if (head == null) {
+        head = mems.head
+      } else {
+        tail.next = mems.head
+      }
+      tail = mems.tail
+      size += mems.size
+      mems.head = null
+      mems.tail = null
+      mems.size = 0
+    }
+}
+
 final class RegionPool private(strictMemoryCheck: Boolean, threadName: String, threadID: Long) extends AutoCloseable {
   log.info(s"RegionPool: initialized for thread $threadID: $threadName")
   protected[annotations] val freeBlocks: Array[MemoryList] = Array.fill[MemoryList](4)(MemoryList.empty)
   protected[annotations] val regions = new ArrayBuilder[RegionMemory]()
-  private val freeRegions = new ArrayBuilder[RegionMemory]()
+  private val freeRegions = RegionMemoryList.empty
   private val blocks: Array[Long] = Array(0L, 0L, 0L, 0L)
   private var totalAllocatedBytes: Long = 0L
   private var allocationEchoThreshold: Long = 256 * 1024
@@ -85,7 +124,7 @@ final class RegionPool private(strictMemoryCheck: Boolean, threadName: String, t
     }
   }
 
-  protected[annotations] def reclaim(memory: RegionMemory): Unit = {
+  @inline protected[annotations] def reclaim(memory: RegionMemory): Unit = {
     freeRegions += memory
   }
 

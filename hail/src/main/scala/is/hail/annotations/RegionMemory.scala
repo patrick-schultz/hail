@@ -3,6 +3,9 @@ package is.hail.annotations
 import is.hail.utils._
 
 final class RegionMemory(pool: RegionPool) extends AutoCloseable {
+  // used for linked lists of RegionMemory
+  private[annotations] var next: RegionMemory = null
+
   private var usedBlocks: MemoryList = MemoryList.empty
   private val bigChunks = new ArrayBuilder[Long](4)
   private val jObjects = new ArrayBuilder[AnyRef](0)

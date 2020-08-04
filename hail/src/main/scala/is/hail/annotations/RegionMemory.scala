@@ -3,12 +3,13 @@ package is.hail.annotations
 import is.hail.utils._
 
 final class RegionMemory(pool: RegionPool) extends AutoCloseable {
-  private val usedBlocks = new ArrayBuilder[Long](4)
+  private var usedBlocks: MemoryList = MemoryList.empty
   private val bigChunks = new ArrayBuilder[Long](4)
   private val jObjects = new ArrayBuilder[AnyRef](0)
 
   private var totalChunkMemory = 0L
-  private var currentBlock: Long = 0L
+  private var currentBlockHandle: MemoryHandle = _
+  @inline private def currentBlock: Long = currentBlockHandle.addr
   private var offsetWithinBlock: Long = _
 //  var stackTrace: Option[IndexedSeq[StackTraceElement]] = None
 
@@ -32,6 +33,12 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
   }
 
   def dumpMemoryInfo(): String = {
+    var usedBlocksString: String = ""
+    var curBlock = usedBlocks.head
+    while (curBlock != null) {
+      usedBlocksString += s"${curBlock.addr.toString()}, "
+      curBlock = curBlock.next
+    }
     s"""
        |Blocks Used = ${usedBlocks.size}, Chunks used = ${bigChunks.size}
        |Block Info:
@@ -40,14 +47,15 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
        |    Current Block Address: ${currentBlock}
        |    Offset Within Block:   ${offsetWithinBlock}
        |  Used Blocks Info:
-       |    BlockStarts: ${usedBlocks.result().toIndexedSeq}
+       |    BlockStarts: $usedBlocksString
        |""".stripMargin
   }
 
   def allocateNewBlock(): Unit = {
-    if (currentBlock != 0)
-      usedBlocks += currentBlock
-    currentBlock = pool.getBlock(blockSize)
+    if (currentBlockHandle != null) {
+      usedBlocks += currentBlockHandle
+    }
+    currentBlockHandle = pool.getBlock(blockSize)
   }
 
   def getCurrentBlock(): Long = currentBlock
@@ -119,13 +127,6 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
     jObjects.clearAndSetMem(null)
   }
 
-  private def freeFullBlocks(): Unit = freeFullBlocks(pool.freeBlocks(blockSize))
-
-  private def freeFullBlocks(ab: ArrayBuilder[Long]): Unit = {
-    ab.appendFrom(usedBlocks)
-    usedBlocks.clearAndResize()
-  }
-
   def getTotalChunkMemory(): Long = this.totalChunkMemory
 
   protected[annotations] def freeMemory(): Unit = {
@@ -137,16 +138,16 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
       assert(jObjects.size == 0)
     } else {
       val freeBlocksOfSize = pool.freeBlocks(blockSize)
-      if (currentBlock != 0)
-        freeBlocksOfSize += currentBlock
+      if (currentBlockHandle != null)
+        freeBlocksOfSize += currentBlockHandle
 
-      freeFullBlocks(freeBlocksOfSize)
+      freeBlocksOfSize ++= usedBlocks
       freeChunks()
       freeObjects()
       releaseReferences()
 
       offsetWithinBlock = 0
-      currentBlock = 0
+      currentBlockHandle = null
       totalChunkMemory = 0
       blockSize = -1
     }
@@ -164,9 +165,9 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
 
   def clear(): Unit = {
     assert(referenceCount == 1)
-    assert(currentBlock != 0)
+    assert(currentBlockHandle != null)
 
-    freeFullBlocks()
+    pool.freeBlocks(blockSize) ++= usedBlocks
     freeChunks()
     freeObjects()
     releaseReferences()
@@ -184,7 +185,7 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
   def initialize(newSize: Region.Size): Unit = {
     assert(blockSize == -1)
     assert(referenceCount == 0)
-    assert(currentBlock == 0)
+    assert(currentBlockHandle == null)
     assert(totalChunkMemory == 0)
 
 //    this.stackTrace = Some(Thread.currentThread().getStackTrace.toIndexedSeq.drop(4))
@@ -203,7 +204,7 @@ final class RegionMemory(pool: RegionPool) extends AutoCloseable {
 
   def numChunks: Int = bigChunks.size
 
-  def numBlocks: Int = usedBlocks.size + (currentBlock != 0).toInt
+  def numBlocks: Int = usedBlocks.size + (currentBlockHandle != null).toInt
 
   def currentOffset: Long = currentBlock + offsetWithinBlock
 

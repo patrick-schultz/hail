@@ -15,9 +15,50 @@ object RegionPool {
   }
 }
 
+final class MemoryHandle(val addr: Long, var next: MemoryHandle)
+
+object MemoryList {
+  def empty: MemoryList = new MemoryList(null, null, 0)
+}
+
+final class MemoryList(var head: MemoryHandle, var tail: MemoryHandle, var size: Int) {
+  @inline def pop(): MemoryHandle = {
+    val ret = head
+    head = head.next
+    if (head == null)
+      tail = null
+    ret.next = null
+    size -= 1
+    ret
+  }
+
+  @inline def +=(block: MemoryHandle): Unit = {
+    if (head == null) {
+      tail = block
+    }
+    block.next = head
+    head = block
+    size += 1
+  }
+
+  @inline def ++=(blocks: MemoryList): Unit =
+    if (blocks.head != null) {
+      if (head == null) {
+        head = blocks.head
+      } else {
+        tail.next = blocks.head
+      }
+      tail = blocks.tail
+      size += blocks.size
+      blocks.head = null
+      blocks.tail = null
+      blocks.size = 0
+    }
+}
+
 final class RegionPool private(strictMemoryCheck: Boolean, threadName: String, threadID: Long) extends AutoCloseable {
   log.info(s"RegionPool: initialized for thread $threadID: $threadName")
-  protected[annotations] val freeBlocks: Array[ArrayBuilder[Long]] = Array.fill[ArrayBuilder[Long]](4)(new ArrayBuilder[Long])
+  protected[annotations] val freeBlocks: Array[MemoryList] = Array.fill[MemoryList](4)(MemoryList.empty)
   protected[annotations] val regions = new ArrayBuilder[RegionMemory]()
   private val freeRegions = new ArrayBuilder[RegionMemory]()
   private val blocks: Array[Long] = Array(0L, 0L, 0L, 0L)
@@ -48,7 +89,7 @@ final class RegionPool private(strictMemoryCheck: Boolean, threadName: String, t
     freeRegions += memory
   }
 
-  protected[annotations] def getBlock(size: Int): Long = {
+  protected[annotations] def getBlock(size: Int): MemoryHandle = {
     val pool = freeBlocks(size)
     if (pool.size > 0) {
       pool.pop()
@@ -56,7 +97,7 @@ final class RegionPool private(strictMemoryCheck: Boolean, threadName: String, t
       blocks(size) += 1
       val blockByteSize = Region.SIZES(size)
       incrementAllocatedBytes(blockByteSize)
-      Memory.malloc(blockByteSize)
+      new MemoryHandle(Memory.malloc(blockByteSize), null)
     }
   }
 
@@ -151,7 +192,7 @@ final class RegionPool private(strictMemoryCheck: Boolean, threadName: String, t
       val blockSize = Region.SIZES(i)
       val blocks = freeBlocks(i)
       while (blocks.size > 0) {
-        Memory.free(blocks.pop())
+        Memory.free(blocks.pop().addr)
         totalAllocatedBytes -= blockSize
       }
       i += 1

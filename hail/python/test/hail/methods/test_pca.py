@@ -262,3 +262,33 @@ def test_spectral_moments():
             moments = hl.eval(hl._spectral_moments(mt_A.ent, 7))
             true_moments = np.array([np.sum(np.power(sigma, 2*i)) for i in range(1, 8)])
             np.testing.assert_allclose(moments, true_moments, rtol=2e-01)
+
+
+def test_spectra_and_moments():
+    from hail.methods.pca import _pca_and_moments
+    # k, m, n
+    dim_triplets = [(10, 1000, 1000), (20, 1000, 1000), (10, 100, 200)]
+
+    for triplet in dim_triplets:
+        k, m, n = triplet
+        for idx, spec_func in enumerate(spectral_functions):
+            min_dim = min(m, n)
+            sigma = np.diag([spec_func(i+1, k) for i in range(min_dim)])
+            seed = 1025
+            np.random.seed(seed)
+            U = np.linalg.qr(np.random.normal(0, 1, (m, min_dim)))[0]
+            V = np.linalg.qr(np.random.normal(0, 1, (n, min_dim)))[0]
+            A = U @ sigma @ V.T
+            mt_A = matrix_table_from_numpy(A)
+
+            eigenvalues, scores, loadings, moments = _pca_and_moments(mt_A.ent, k=k, num_moments=7, oversampling_param=k, compute_loadings=True, q_iterations=4)
+            singulars = np.sqrt(eigenvalues)
+            hail_V = (np.array(scores.scores.collect()) / singulars).T
+            hail_U = np.array(loadings.loadings.collect())
+            approx_A = hail_U @ np.diag(singulars) @ hail_V
+            norm_of_diff = np.linalg.norm(A - approx_A, 2)
+            np.testing.assert_allclose(norm_of_diff, spec_func(k + 1, k), rtol=1e-02, err_msg=f"Norm test failed on triplet {triplet} on spec{idx + 1}")
+            np.testing.assert_allclose(singulars, np.diag(sigma)[:k], rtol=1e-01, err_msg=f"Failed on triplet {triplet} on spec{idx + 1}")
+
+            true_moments = np.array([np.sum(np.power(sigma, 2*i)) for i in range(1, 8)])
+            np.testing.assert_allclose(moments, true_moments, rtol=1e-01)

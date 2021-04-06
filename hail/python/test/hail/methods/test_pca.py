@@ -291,4 +291,4 @@ def test_spectra_and_moments():
             np.testing.assert_allclose(singulars, np.diag(sigma)[:k], rtol=1e-01, err_msg=f"Failed on triplet {triplet} on spec{idx + 1}")
 
             true_moments = np.array([np.sum(np.power(sigma, 2*i)) for i in range(1, 8)])
-            np.testing.assert_allclose(moments, true_moments, rtol=1e-01)
+            np.testing.assert_allclose(moments, true_moments, rtol=1e-04)

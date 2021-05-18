@@ -80,41 +80,15 @@ class SNDArrayPointerSettable(
 
   override def get: PCode = new SNDArrayPointerCode(st, a)
 
-  override def outOfBounds(indices: IndexedSeq[Value[Long]], cb: EmitCodeBuilder): Code[Boolean] = {
-    val shape = this.shapes(cb)
-    val outOfBounds = cb.newLocal[Boolean]("sndarray_out_of_bounds", false)
-
-    (0 until pt.nDims).foreach { dimIndex =>
-      cb.assign(outOfBounds, outOfBounds || (indices(dimIndex) >= shape(dimIndex)))
-    }
-    outOfBounds
-  }
-
-  override def assertInBounds(indices: IndexedSeq[Value[Long]], cb: EmitCodeBuilder, errorId: Int): Code[Unit] = {
-    val shape = this.shapes(cb)
-    Code.foreach(0 until pt.nDims) { dimIndex =>
-      val eMsg = const("Index ").concat(indices(dimIndex).toS)
-        .concat(s" is out of bounds for axis $dimIndex with size ")
-        .concat(shape(dimIndex).toS)
-      (indices(dimIndex) >= shape(dimIndex)).orEmpty(Code._fatalWithID[Unit](eMsg, errorId))
-    }
-  }
-
   override def shapes(cb: EmitCodeBuilder): IndexedSeq[Value[Long]] = shape
 
   override def strides(cb: EmitCodeBuilder): IndexedSeq[Value[Long]] = strides
 
-  override def sameShape(other: SNDArrayValue, cb: EmitCodeBuilder): Code[Boolean] = {
-    val otherShapes = other.shapes(cb)
-    val b = cb.newLocal[Boolean]("sameShape_b", true)
-    assert(shape.length == otherShapes.length)
-    shape.zip(otherShapes).foreach { case (s1, s2) =>
-      cb.assign(b, b && s1.ceq(s2))
-    }
-    b
-  }
-
   def firstDataAddress(cb: EmitCodeBuilder): Value[Long] = dataFirstElement
+
+  def slice(cb: EmitCodeBuilder, ranges: (Value[Long], Value[Long])*): SNDArrayPointerSettable = {
+
+  }
 }
 
 class SNDArrayPointerCode(val st: SNDArrayPointer, val a: Code[Long]) extends PNDArrayCode {

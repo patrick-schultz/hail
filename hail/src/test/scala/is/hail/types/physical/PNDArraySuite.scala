@@ -21,6 +21,22 @@ class PNDArraySuite extends PhysicalTestUtils {
     runTests(false, true)
   }
 
+  @Test def testLocalWhitening(): Unit = {
+    val region = Region(pool=this.pool)
+    val fb = EmitFunctionBuilder[Region, Long, Long](ctx, "whiten_test")
+
+    try {
+      fb.emitWithBuilder { cb =>
+        val A = fb.getCodeParam[Long](1)
+
+      }
+    } catch {
+      case e: Throwable =>
+        region.clear()
+        throw e
+    }
+  }
+
   @Test def testRefCounted(): Unit = {
     val nd = PCanonicalNDArray(PInt32Required, 1)
 

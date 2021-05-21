@@ -69,6 +69,8 @@ abstract class PNDArray extends PType {
 
 abstract class PNDArrayValue extends PValue with SNDArrayValue {
   def pt: PNDArray
+
+  override def get: PNDArrayCode
 }
 
 abstract class PNDArrayCode extends PCode with SNDArrayCode {

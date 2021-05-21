@@ -5,6 +5,7 @@ import is.hail.asm4s.{coerce => _, _}
 import is.hail.expr.ir.functions.StringFunctions
 import is.hail.expr.ir.streams.StreamProducer
 import is.hail.lir
+import is.hail.types.physical.stypes.{SCode, SSettable}
 import is.hail.types.physical.stypes.interfaces.SStreamCode
 import is.hail.types.physical.{PCode, PSettable, PType, PValue}
 import is.hail.utils.FastIndexedSeq
@@ -54,8 +55,8 @@ class EmitCodeBuilder(val emb: EmitMethodBuilder[_], var code: Code[Unit]) exten
     tmp
   }
 
-  def assign(s: PSettable, v: PCode): Unit = {
-    assert(s.pt.equalModuloRequired(v.pt), s"type mismatch!\n  settable=${s.pt}\n     passed=${v.pt}")
+  def assign(s: SSettable, v: SCode): Unit = {
+    assert(s.st.equalsExceptTopLevelRequiredness(v.st), s"type mismatch!\n  settable=${s.st}\n     passed=${v.st}")
     s.store(this, v)
   }
 

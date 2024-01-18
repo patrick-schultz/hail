@@ -2,9 +2,9 @@ import $ivy.`de.tototec::de.tobiasroeser.mill.vcs.version::0.4.0`
 import de.tobiasroeser.mill.vcs.version.VcsVersion
 import mill._
 import mill.api.Result
-import mill.scalalib._
 import mill.scalalib.Assembly._
 import mill.scalalib.TestModule.TestNg
+import mill.scalalib._
 import mill.scalalib.scalafmt.ScalafmtModule
 import mill.util.Jvm
 
@@ -20,6 +20,9 @@ def millw() = T.command {
   os.perms.set(millw, os.perms(millw) + java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE)
   target
 }
+
+def javaVersion: T[String] =
+  T.input { System.getProperty("java.version") }
 
 def scalaVersion = T.input {
   val v = T.ctx().env.getOrElse("SCALA_VERSION", "2.12.15")
@@ -92,8 +95,7 @@ trait HailScalaModule extends ScalaModule with ScalafmtModule with SbtModule { o
   def asmVersion = "7.3.1"
 
   override def javacOptions: T[Seq[String]] = Seq(
-    "-Xlint:all",
-    "-XDignore.symbol.file",
+    "-Xlint:all,-processing",
     "-Werror",
     if (debugBuild) "-g" else "-O",
   )
@@ -114,9 +116,8 @@ trait HailScalaModule extends ScalaModule with ScalafmtModule with SbtModule { o
         "-Wconf:cat=unused-locals:w,cat=unused:info,any:ws",
       )
       else Seq(
-//        "-opt:l:inline",
-//        "-opt-inline-from:**,!org.apache.spark.**",
-//        "-opt:l:method"
+        "-opt:l:method",
+        "-opt:-closure-invocations"
       )
     )
   }
@@ -233,12 +234,21 @@ trait MainModule extends Cross.Module[String] with HailScalaModule { outer =>
   object memory extends JavaModule with CrossValue {
     override def zincIncrementalCompilation = false
 
-    override def javacOptions: T[Seq[String]] = Seq(
-//      "-Xlint:all",
-      "-XDignore.symbol.file"
-//      "-Werror",
-//      if (debugBuild) "-g" else "-O"
-    )
+    override def javacOptions: T[Seq[String]] =
+      T {
+        val opts = IndexedSeq.newBuilder[String]
+        opts += "-Werror"
+        opts += "-Xlint:all"
+        opts += "-XDignore.symbol.file"
+        opts += (if (debugBuild) "-g" else "-O")
+
+        if (javaVersion().startsWith("1.8")) {
+          opts += "-Xlint:all,-sunapi"
+          opts += "-XDenableSunApiLintControl"
+        }
+
+        opts.result()
+      }
 
     override def sources = T.sources {
       Seq(PathRef(this.millSourcePath / os.up / "src" / crossValue / "java"))

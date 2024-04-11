@@ -42,10 +42,10 @@ object Copy {
           newChildren(1).asInstanceOf[IR],
           newChildren.drop(2).asInstanceOf[IndexedSeq[IR]],
         )
-      case Block(bindings, _) =>
+      case Block(body, _) =>
         assert(newChildren.length == x.size)
         val newBindings =
-          (bindings, newChildren.init)
+          (body, newChildren.init)
             .zipped
             .map { case (binding, ir: IR) => binding.copy(value = ir) }
         Block(newBindings, newChildren.last.asInstanceOf[IR])

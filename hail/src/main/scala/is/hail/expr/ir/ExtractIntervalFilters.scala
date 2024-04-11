@@ -910,14 +910,14 @@ class ExtractIntervalFilters(ctx: ExecuteContext, keyType: TStruct) {
     var res: AbstractLattice.Value = if (env.keySet == KeySetLattice.bottom)
       AbstractLattice.bottom
     else x match {
-      case Block(bindings, body) =>
-        val newEnv = bindings.foldLeft[Option[AbstractEnv]](Some(env)) {
+      case Block(body, result) =>
+        val newEnv = body.foldLeft[Option[AbstractEnv]](Some(env)) {
           case (Some(env), Binding(name, value, Scope.EVAL)) =>
             Some(env.bind(name -> recur(value, env)))
           case _ => None
         }
         newEnv match {
-          case Some(env) => recur(body, env)
+          case Some(env) => recur(result, env)
           case None => null
         }
       case Ref(name, _) => env(name)

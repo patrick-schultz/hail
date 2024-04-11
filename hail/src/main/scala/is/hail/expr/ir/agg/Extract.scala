@@ -215,8 +215,8 @@ class Aggs(
         original,
         {
           case ir if RefEquality(ir) == rewriteRoot =>
-            val Block(bindings, body) = ir
-            Block(bindings, f(rewriteMap.lookup(body)))
+            val Block(body, result) = ir
+            Block(body, f(rewriteMap.lookup(result)))
         },
       ).asInstanceOf[IR]
     }
@@ -531,11 +531,11 @@ object Extract {
     }
 
     val newNode = ir match {
-      case x @ Block(bindings, body) =>
+      case x @ Block(body, result) =>
         var newEnv = env
         val newBindings = Array.newBuilder[Binding]
-        newBindings.sizeHint(bindings)
-        for (binding <- bindings) binding match {
+        newBindings.sizeHint(body)
+        for (binding <- body) binding match {
           case Binding(name, value, Scope.EVAL) =>
             val newValue = this.extract(value, newEnv, bindingNodesReferenced, rewriteMap, ab,
               seqBuilder, memo, result, r, isScan)
@@ -544,7 +544,7 @@ object Extract {
           case Binding(name, value, _) =>
             seqBuilder += name -> value
         }
-        val newBody = this.extract(body, newEnv, bindingNodesReferenced, rewriteMap, ab, seqBuilder,
+        val newBody = this.extract(result, newEnv, bindingNodesReferenced, rewriteMap, ab, seqBuilder,
           memo, result, r, isScan)
         Block(newBindings.result(), newBody)
       case x: ApplyAggOp if !isScan =>

@@ -1642,7 +1642,7 @@ class PruneSuite extends HailSuite {
       subsetTS("b"),
       (_: BaseIR, r: BaseIR) => {
         val ir = r.asInstanceOf[Block]
-        ir.bindings.head.value.typ == subsetTS("b")
+        ir.body.head.value.typ == subsetTS("b")
       },
     )
   }

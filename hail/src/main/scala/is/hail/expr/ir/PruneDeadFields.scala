@@ -1372,11 +1372,11 @@ object PruneDeadFields {
       case Consume(_) =>
         recurMax(ir, 0)
 
-      case Block(bindings, _) =>
+      case Block(body, _) =>
         val typeStates = mutable.AnyRefMap.empty[Name, TypeState]
-        recurWithTypeStates(ir, bindings.length, requestedType, typeStates)
-        for (i <- bindings.indices.reverse)
-          recurWithTypeStates(ir, i, typeStates(bindings(i).name).newType, typeStates)
+        recurWithTypeStates(ir, body.length, requestedType, typeStates)
+        for (i <- body.indices.reverse)
+          recurWithTypeStates(ir, i, typeStates(body(i).name).newType, typeStates)
 
       case Ref(name, _) =>
 //        env.eval.lookupOption(name).foreach(_.union(requestedType))

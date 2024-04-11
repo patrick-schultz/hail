@@ -825,7 +825,7 @@ class Emit[C](val ctx: EmitContext, val cb: EmitClassBuilder[C]) {
 
       case let: Block =>
         val newEnv = emitBlock(let, cb, env, region, container, loopEnv)
-        emitVoid(let.body, env = newEnv)
+        emitVoid(let.result, env = newEnv)
 
       case StreamFor(a, valueName, body) =>
         emitStream(a, region).toI(cb).consume(
@@ -1109,7 +1109,7 @@ class Emit[C](val ctx: EmitContext, val cb: EmitClassBuilder[C]) {
 
       case let: Block =>
         val newEnv = emitBlock(let, cb, env, region, container, loopEnv)
-        emitI(let.body, env = newEnv)
+        emitI(let.result, env = newEnv)
 
       case Coalesce(values) =>
         val emittedValues = values.map(v => EmitCode.fromI(cb.emb)(cb => emitInNewBuilder(cb, v)))
@@ -3687,7 +3687,7 @@ class Emit[C](val ctx: EmitContext, val cb: EmitClassBuilder[C]) {
         var newEnv = env
         mb.voidWithBuilder { cb =>
           newEnv =
-            emitChunk(cb, let.bindings.slice(chunkStart, pos), env, mb.getCodeParam[Region](1))
+            emitChunk(cb, let.body.slice(chunkStart, pos), env, mb.getCodeParam[Region](1))
         }
         cb.invokeVoid(mb, cb.this_, r)
         newEnv
@@ -3697,14 +3697,14 @@ class Emit[C](val ctx: EmitContext, val cb: EmitClassBuilder[C]) {
         ir.typ.isInstanceOf[TStream] || ctx.inLoopCriticalPath.contains(ir)
 
       // end of bindings, emit any pending chunk and return the final environment
-      if (pos == let.bindings.length) {
+      if (pos == let.body.length) {
         if (chunkSize > 0)
           return emitChunkInSeparateMethod()
         else
           return env
       }
 
-      val Binding(curName, curIR, Scope.EVAL) = let.bindings(pos)
+      val Binding(curName, curIR, Scope.EVAL) = let.body(pos)
 
       // skip over unused streams
       if (curIR.typ.isInstanceOf[TStream] && !uses.contains(curName)) {
@@ -3728,10 +3728,10 @@ class Emit[C](val ctx: EmitContext, val cb: EmitClassBuilder[C]) {
     }
 
     // don't split into separate methods if the bindings list is small
-    if (let.bindings.size > 4) {
+    if (let.body.size > 4) {
       go(env, 0, 0, 0, 0)
     } else {
-      emitChunk(cb, let.bindings, env, r)
+      emitChunk(cb, let.body, env, r)
     }
   }
 }

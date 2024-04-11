@@ -327,12 +327,12 @@ object LowerMatrixIR {
                 Let(unwrapStruct(aggs, eltUID), liftedBody)
               })
 
-            case Block(bindings, body) =>
+            case Block(body, result) =>
               val newBindings = new BoxedArrayBuilder[Binding]
               def go(i: Int, builder: BoxedArrayBuilder[(Name, IR)]): IR = {
-                if (i == bindings.length) {
-                  lift(body, builder)
-                } else bindings(i) match {
+                if (i == body.length) {
+                  lift(result, builder)
+                } else body(i) match {
                   case Binding(name, value, Scope.SCAN) =>
                     val ab = new BoxedArrayBuilder[(Name, IR)]
                     val liftedBody = go(i + 1, ab)
@@ -483,16 +483,16 @@ object LowerMatrixIR {
               Let(aggs.map { case (name, _) => name -> GetField(eltUID, name.str) }, liftedBody)
             })
 
-          case Block(bindings, body) =>
+          case Block(body, result) =>
             var newBindings = Seq[Binding]()
             def go(
               i: Int,
               scanBindings: BoxedArrayBuilder[(Name, IR)],
               aggBindings: BoxedArrayBuilder[(Name, IR)],
             ): IR = {
-              if (i == bindings.length) {
-                lift(body, scanBindings, aggBindings)
-              } else bindings(i) match {
+              if (i == body.length) {
+                lift(result, scanBindings, aggBindings)
+              } else body(i) match {
                 case Binding(name, value, Scope.EVAL) =>
                   val lifted = lift(value, scanBindings, aggBindings)
                   val liftedBody = go(i + 1, scanBindings, aggBindings)

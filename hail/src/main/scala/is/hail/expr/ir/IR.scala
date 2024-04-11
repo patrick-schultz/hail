@@ -198,10 +198,7 @@ object AggLet {
 
 object Let {
   def apply(bindings: IndexedSeq[(Name, IR)], body: IR): Block =
-    Block(
-      bindings.map { case (name, value) => Binding(name, value) },
-      body,
-    )
+    Block(bindings.map { case (name, value) => Binding(name, value) }, body)
 
   def void(bindings: IndexedSeq[(Name, IR)]): IR = {
     if (bindings.isEmpty) {
@@ -216,9 +213,9 @@ object Let {
 
 case class Binding(name: Name, value: IR, scope: Int = Scope.EVAL)
 
-final case class Block(bindings: IndexedSeq[Binding], body: IR) extends IR {
+final case class Block(body: IndexedSeq[Binding], result: IR) extends IR {
   override lazy val size: Int =
-    bindings.length + 1
+    body.length + 1
 }
 
 object Block {

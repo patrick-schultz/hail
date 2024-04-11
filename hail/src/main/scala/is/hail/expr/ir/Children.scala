@@ -34,10 +34,10 @@ object Children {
       children(1) = default
       for (i <- cases.indices) children(2 + i) = cases(i)
       children
-    case Block(bindings, body) =>
+    case Block(body, result) =>
       val children = Array.ofDim[BaseIR](x.size)
-      for (i <- bindings.indices) children(i) = bindings(i).value
-      children(bindings.size) = body
+      for (i <- body.indices) children(i) = body(i).value
+      children(body.size) = result
       children
     case RelationalLet(_, value, body) =>
       Array(value, body)

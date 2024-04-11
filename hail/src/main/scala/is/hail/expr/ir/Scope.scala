@@ -2,8 +2,8 @@ package is.hail.expr.ir
 
 object UsesAggEnv {
   def apply(ir0: BaseIR, i: Int): Boolean = ir0 match {
-    case Block(bindings, _) if i < bindings.length =>
-      bindings(i).scope == Scope.AGG
+    case Block(body, _) if i < body.length =>
+      body(i).scope == Scope.AGG
     case AggGroupBy(_, _, false) => i == 0
     case AggFilter(_, _, false) => i == 0
     case AggExplode(_, _, _, false) => i == 0
@@ -16,8 +16,8 @@ object UsesAggEnv {
 
 object UsesScanEnv {
   def apply(ir0: BaseIR, i: Int): Boolean = ir0 match {
-    case Block(bindings, _) if i < bindings.length =>
-      bindings(i).scope == Scope.SCAN
+    case Block(body, _) if i < body.length =>
+      body(i).scope == Scope.SCAN
     case AggGroupBy(_, _, true) => i == 0
     case AggFilter(_, _, true) => i == 0
     case AggExplode(_, _, _, true) => i == 0

@@ -225,12 +225,12 @@ object Bindings {
 
   private def childEnvValue(ir: IR, i: Int): Bindings[Type] =
     ir match {
-      case Block(bindings, _) =>
-        val bindingsTypes = bindings.view.take(i).map(b => b.name -> b.value.typ).toArray
+      case Block(body, _) =>
+        val bindingsTypes = body.view.take(i).map(b => b.name -> b.value.typ).toArray
         val eval = mutable.ArrayBuilder.make[Int]
         val agg = mutable.ArrayBuilder.make[Int]
         val scan = mutable.ArrayBuilder.make[Int]
-        for (k <- 0 until i) bindings(k) match {
+        for (k <- 0 until i) body(k) match {
           case Binding(_, _, Scope.EVAL) =>
             eval += k
           case Binding(_, _, Scope.AGG) =>
@@ -238,7 +238,7 @@ object Bindings {
           case Binding(_, _, Scope.SCAN) =>
             scan += k
         }
-        if (i < bindings.length) bindings(i).scope match {
+        if (i < body.length) body(i).scope match {
           case Scope.EVAL =>
             Bindings(
               bindingsTypes,

@@ -33,7 +33,7 @@ object ForwardLets {
         case l: Block =>
           val keep = new BoxedArrayBuilder[Binding]
           val refs = uses(l)
-          val newEnv = l.bindings.foldLeft(env) {
+          val newEnv = l.body.foldLeft(env) {
             case (env, Binding(name, value, scope)) =>
               val rewriteValue = rewrite(value, env.promoteScope(scope)).asInstanceOf[IR]
               if (
@@ -47,7 +47,7 @@ object ForwardLets {
               }
           }
 
-          val newBody = rewrite(l.body, newEnv).asInstanceOf[IR]
+          val newBody = rewrite(l.result, newEnv).asInstanceOf[IR]
           if (keep.isEmpty) newBody
           else Block(keep.result(), newBody)
 

@@ -139,11 +139,11 @@ object Interpret {
           case null =>
             null
         }
-      case Block(bindings, body) =>
-        val newEnv = bindings.foldLeft(env) { case (env, Binding(name, value, Scope.EVAL)) =>
+      case Block(body, result) =>
+        val newEnv = body.foldLeft(env) { case (env, Binding(name, value, Scope.EVAL)) =>
           env.bind(name -> interpret(value, env, args))
         }
-        interpret(body, newEnv, args)
+        interpret(result, newEnv, args)
       case Ref(name, _) => env.lookup(name)
       case ApplyBinaryPrimOp(op, l, r) =>
         val lValue = interpret(l, env, args)

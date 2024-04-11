@@ -242,8 +242,8 @@ class Pretty(
           "<literal value>",
       )
     case EncodedLiteral(codec, _) => single(codec.encodedVirtualType.parsableString())
-    case Block(bindings, _) if !elideBindings =>
-      bindings.flatMap { b =>
+    case Block(body, _) if !elideBindings =>
+      body.flatMap { b =>
         val bindType = b.scope match {
           case Scope.EVAL => "eval"
           case Scope.AGG => "agg"
@@ -920,14 +920,14 @@ class Pretty(
     }
 
     def pretty(ir: BaseIR, bindings: Env[String]): (Doc, Doc) = ir match {
-      case Block(binds, body) =>
+      case Block(body, result) =>
         val (valueDoc, newBindings) =
-          binds.foldLeft((empty, bindings)) { case ((valueDoc, bindings), binding) =>
+          body.foldLeft((empty, bindings)) { case ((valueDoc, bindings), binding) =>
             val (doc, ident) =
               prettyWithIdent(binding.value, bindings, "%", Some(binding.name), binding.scope)
             (concat(valueDoc, doc), bindings.bind(binding.name, ident))
           }
-        val (bodyPre, bodyHead) = pretty(body, newBindings)
+        val (bodyPre, bodyHead) = pretty(result, newBindings)
         (concat(valueDoc, bodyPre), bodyHead)
       case RelationalLet(name, value, body) =>
         val (valueDoc, valueIdent) = prettyWithIdent(value, bindings, "%", Some(name))

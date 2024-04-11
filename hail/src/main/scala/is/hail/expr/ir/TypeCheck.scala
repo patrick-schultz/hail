@@ -39,7 +39,7 @@ object TypeCheck {
 
   private def checkVoidTypedChild(ctx: ExecuteContext, ir: BaseIR, i: Int, env: BindingEnv[Type])
     : Unit = ir match {
-    case l: Block if i == l.bindings.length || l.body.typ == TVoid =>
+    case l: Block if i == l.body.length || l.result.typ == TVoid =>
     case _: StreamFor if i == 1 =>
     case _: RunAggScan if (i == 1 || i == 2) =>
     case _: StreamBufferedAggregate if (i == 1 || i == 3) =>
@@ -93,8 +93,8 @@ object TypeCheck {
       case Switch(x, default, cases) =>
         assert(x.typ == TInt32)
         assert(cases.forall(_.typ == default.typ))
-      case x @ Block(_, body) =>
-        assert(x.typ == body.typ)
+      case x @ Block(_, result) =>
+        assert(x.typ == result.typ)
       case x @ Ref(name, _) =>
         env.eval.lookupOption(name) match {
           case Some(expected) =>

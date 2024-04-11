@@ -62,17 +62,17 @@ class NormalizeNames(freeVariables: Set[Name]) {
   }
 
   private def normalizeIR(ir: BaseIR, env: BindingEnv[Name]): StackFrame[BaseIR] = ir match {
-    case Block(bindings, body) =>
+    case Block(body, result) =>
       var newEnv = env
       for {
-        newBindings <- bindings.mapRecur { case Binding(name, value, scope) =>
+        newBindings <- body.mapRecur { case Binding(name, value, scope) =>
           for (newValue <- normalizeIR(value, newEnv.promoteScope(scope))) yield {
             val newName = gen()
             newEnv = newEnv.bindInScope(name, newName, scope)
             Binding(newName, newValue.asInstanceOf[IR], scope)
           }
         }
-        newBody <- normalizeIR(body, newEnv)
+        newBody <- normalizeIR(result, newEnv)
       } yield Block(newBindings, newBody.asInstanceOf[IR])
     case Ref(name, typ) =>
       val newName = env.eval.lookupOption(name).getOrElse {

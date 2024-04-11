@@ -291,7 +291,7 @@ object Simplify {
     case ArrayLen(MakeArray(args, _)) => I32(args.length)
 
     case StreamLen(MakeStream(args, _, _)) => I32(args.length)
-    case StreamLen(Block(bindings, body)) => Block(bindings, StreamLen(body))
+    case StreamLen(Block(body, result)) => Block(body, StreamLen(result))
     case StreamLen(StreamMap(s, _, _)) => StreamLen(s)
     case StreamLen(StreamFlatMap(a, name, body)) => streamSumIR(StreamMap(a, name, StreamLen(body)))
     case StreamLen(StreamGrouped(a, groupSize)) =>
@@ -355,8 +355,8 @@ object Simplify {
 
     case ToStream(ToArray(s), false) if s.typ.isInstanceOf[TStream] => s
 
-    case ToStream(Block(bindings, ToArray(x)), false) if x.typ.isInstanceOf[TStream] =>
-      Block(bindings, x)
+    case ToStream(Block(body, ToArray(x)), false) if x.typ.isInstanceOf[TStream] =>
+      Block(body, x)
 
     case MakeNDArray(ToArray(someStream), shape, rowMajor, errorId) =>
       MakeNDArray(someStream, shape, rowMajor, errorId)
@@ -416,39 +416,39 @@ object Simplify {
     case InsertFields(SelectFields(old, _), Seq(), Some(insertFieldOrder)) =>
       SelectFields(old, insertFieldOrder)
 
-    case Block(Seq(), body) =>
-      body
+    case Block(Seq(), result) =>
+      result
 
-    case Block(xs, Block(ys, body)) =>
-      Block(xs ++ ys, body)
+    case Block(body1, Block(body2, result)) =>
+      Block(body1 ++ body2, result)
 
     // assumes `NormalizeNames` has been run before this.
-    case Block(Block.Nested(i, bindings), body) =>
+    case Block(Block.Nested(i, body), result) =>
       def numBindings(b: Binding): Int =
         b.value match {
-          case let: Block => 1 + let.bindings.length
+          case let: Block => 1 + let.body.length
           case _ => 1
         }
 
       val newBindings =
         new BoxedArrayBuilder[Binding](
-          bindings.foldLeft(0)((sum, binding) => sum + numBindings(binding))
+          body.foldLeft(0)((sum, binding) => sum + numBindings(binding))
         )
 
-      newBindings ++= bindings.view.take(i)
+      newBindings ++= body.view.take(i)
 
-      bindings.view.drop(i).foreach {
+      body.view.drop(i).foreach {
         case Binding(name, ir: Block, scope) =>
-          newBindings ++= (if (scope == Scope.EVAL) ir.bindings
-                           else ir.bindings.map {
+          newBindings ++= (if (scope == Scope.EVAL) ir.body
+                           else ir.body.map {
                              case Binding(name, value, Scope.EVAL) => Binding(name, value, scope)
                              case _ => fatal("Simplify: found nested Agg bindings")
                            })
-          newBindings += Binding(name, ir.body, scope)
+          newBindings += Binding(name, ir.result, scope)
         case binding => newBindings += binding
       }
 
-      Block(newBindings.underlying(), body)
+      Block(newBindings.underlying(), result)
 
     case Block(
           Block.Insert(
@@ -456,7 +456,7 @@ object Simplify {
             Binding(name, x @ InsertFields(old, newFields, _), Scope.EVAL),
             after,
           ),
-          body,
+          result,
         )
         if x.typ.size < 500 && {
           val r = Ref(name, x.typ)
@@ -478,7 +478,7 @@ object Simplify {
                 }
           }
 
-          allRefsCanBePassedThrough(Block(after.toFastSeq, body))
+          allRefsCanBePassedThrough(Block(after.toFastSeq, result))
         } =>
       val fieldNames = newFields.map(_._1).toArray
       val newFieldMap = newFields.toMap
@@ -526,7 +526,7 @@ object Simplify {
         ) ++ FastSeq(
           Binding(name, old)
         ),
-        rewrite(Block(after.toFastSeq, body)),
+        rewrite(Block(after.toFastSeq, result)),
       )
 
     case SelectFields(old, fields) if tcoerce[TStruct](old.typ).fieldNames sameElements fields =>
@@ -761,7 +761,7 @@ object Simplify {
           def canBeLifted(x: IR): Boolean = x match {
             case _: TableAggregate => true
             case _: MatrixAggregate => true
-            case Block(bindings, _) if bindings.exists {
+            case Block(body, _) if body.exists {
                   case Binding(_, _, Scope.AGG) => true
                   case _ => false
                 } => false
@@ -778,7 +778,7 @@ object Simplify {
           def canBeLifted(x: IR): Boolean = x match {
             case _: TableAggregate => true
             case _: MatrixAggregate => true
-            case Block(bindings, _) if bindings.exists {
+            case Block(body, _) if body.exists {
                   case Binding(_, _, Scope.SCAN) => true
                   case _ => false
                 } => false

@@ -1267,7 +1267,7 @@ class PruneSuite extends HailSuite {
       subsetTable(tmr.typ, "row.foo"),
       (_: BaseIR, r: BaseIR) => {
         val tmr = r.asInstanceOf[TableMapRows]
-        TypeCheck(ctx, tmr.newRow, PruneDeadFields.relationalTypeToEnv(tmr.child.typ))
+        TypeCheck(ctx, tmr)
         tmr.child.typ == subsetTable(tr.typ, "row.2", "global.g1", "row.3")
       },
     )
@@ -1278,7 +1278,7 @@ class PruneSuite extends HailSuite {
       subsetTable(tmr2.typ, "row.foo", "NO_KEY"),
       (_: BaseIR, r: BaseIR) => {
         val tmr = r.asInstanceOf[TableMapRows]
-        TypeCheck(ctx, tmr.newRow, PruneDeadFields.relationalTypeToEnv(tmr.child.typ))
+        TypeCheck(ctx, tmr)
         tmr.child.typ == subsetTable(
           tr.typ,
           "row.2",

@@ -3007,11 +3007,20 @@ case class TableMapPartitions(
   }
 }
 
+object TableMapRows {
+  def apply(child: TableIR, newRow: IR): TableMapRows =
+    TableMapRows(
+      child,
+      new BoundBlock(BoundBlock.Params(child.typ.rowBindings), FastSeq.empty, FastSeq(newRow)),
+    )
+}
+
 // Must leave key fields unchanged.
-case class TableMapRows(child: TableIR, newRow: IR) extends TableIR {
+case class TableMapRows(child: TableIR, newRow: BoundBlock) extends TableIR {
   override def typecheck(): Unit = {
     val newFieldSet = newRow.typ.asInstanceOf[TStruct].fieldNames.toSet
     assert(child.typ.key.forall(newFieldSet.contains))
+    assert(newRow.typ.isInstanceOf[TStruct])
   }
 
   val childrenSeq: IndexedSeq[BaseIR] = Array(child, newRow)
@@ -3022,7 +3031,7 @@ case class TableMapRows(child: TableIR, newRow: IR) extends TableIR {
 
   override protected def copyWithNewChildren(newChildren: IndexedSeq[BaseIR]): TableMapRows = {
     assert(newChildren.length == 2)
-    TableMapRows(newChildren(0).asInstanceOf[TableIR], newChildren(1).asInstanceOf[IR])
+    TableMapRows(newChildren(0).asInstanceOf[TableIR], newChildren(1).asInstanceOf[BoundBlock])
   }
 
   override def partitionCounts: Option[IndexedSeq[Long]] = child.partitionCounts

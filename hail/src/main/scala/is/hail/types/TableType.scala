@@ -50,6 +50,10 @@ case class TableType(rowType: TStruct, key: IndexedSeq[String], globalType: TStr
   def rowBindings: IndexedSeq[(Name, Type)] =
     FastSeq(TableIR.globalName -> globalType, TableIR.rowName -> rowType)
 
+  def rowBindingsEval: IndexedSeq[BoundVar] = FastSeq(
+      BoundVar("global", Scope.EVAL, globalType),
+      BoundVar("row", Scope.EVAL, rowType))
+
   def isCanonical: Boolean = rowType.isCanonical && globalType.isCanonical
 
   lazy val keyType: TStruct = TableType.keyType(rowType, key)

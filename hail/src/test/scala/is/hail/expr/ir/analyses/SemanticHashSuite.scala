@@ -251,7 +251,7 @@ class SemanticHashSuite extends HailSuite {
         TableDistinct,
         TableFilter(_, True()),
         TableMapGlobals(_, MakeStruct(IndexedSeq.empty)),
-        TableMapRows(_, MakeStruct(FastSeq("a" -> I32(0)))),
+        TableMapRows(_: TableIR, MakeStruct(FastSeq("a" -> I32(0)))),
         TableRename(_, Map.empty, Map.empty),
       ).map(wrap => Array(wrap(tir), wrap(tir), true, "")),
     )

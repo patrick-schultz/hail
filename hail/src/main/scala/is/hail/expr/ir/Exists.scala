@@ -111,6 +111,13 @@ object ContainsNonCommutativeAgg {
 }
 
 object ContainsScan {
+  def apply(block: BoundBlock): Boolean =
+    block.bindings.exists {
+      case Binding(_, value, Scope.EVAL) => ContainsScan(value)
+      case Binding(_, _, Scope.AGG) => false
+      case Binding(_, _, Scope.SCAN) => true
+    } || ContainsScan(block.result)
+
   def apply(root: IR): Boolean = IsScanResult(root) || (root match {
     case Block(body, result) =>
       body.exists {
@@ -123,6 +130,7 @@ object ContainsScan {
     case _: StreamAggScan => false
     case _ => root.children.exists {
         case child: IR => ContainsScan(child)
+        case block: BoundBlock => ContainsScan(block)
         case _ => false
       }
   })

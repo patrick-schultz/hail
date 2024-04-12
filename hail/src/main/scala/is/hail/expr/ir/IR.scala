@@ -13,7 +13,7 @@ import is.hail.io.avro.{AvroPartitionReader, AvroSchemaSerializer}
 import is.hail.io.bgen.BgenPartitionReader
 import is.hail.io.vcf.{GVCFPartitionReader, VCFHeaderInfo}
 import is.hail.rvd.RVDSpecMaker
-import is.hail.types.{tcoerce, RIterable, RStruct, TypeWithRequiredness}
+import is.hail.types.{RIterable, RStruct, TypeWithRequiredness, tcoerce}
 import is.hail.types.encoded._
 import is.hail.types.physical._
 import is.hail.types.physical.stypes._
@@ -23,7 +23,6 @@ import is.hail.types.virtual._
 import is.hail.utils._
 
 import java.io.OutputStream
-
 import org.json4s.{DefaultFormats, Extraction, Formats, JValue, ShortTypeHints}
 import org.json4s.JsonAST.{JNothing, JString}
 
@@ -208,10 +207,9 @@ object Let {
       Let(bindings.init, bindings.last._2)
     }
   }
-
 }
 
-case class Binding(name: Name, value: IR, scope: Int = Scope.EVAL)
+final case class Binding(name: Name, value: IR, scope: Int = Scope.EVAL)
 
 final case class Block(body: IndexedSeq[Binding], result: IR) extends IR {
   override lazy val size: Int =
@@ -233,6 +231,118 @@ object Block {
       if (idx == -1) None else Some((idx, bindings))
     }
   }
+}
+
+final case class BoundVar(name: Name, scope: Int = Scope.EVAL, typ: Type) {
+  def ref: Ref = Ref(name, typ)
+}
+
+object BoundBlock {
+  def apply(
+    params: Params,
+    bodyVars: IndexedSeq[BoundVar],
+    childrenSeq: IndexedSeq[IR],
+  ): BoundBlock =
+    new BoundBlock(params, bodyVars, childrenSeq)
+
+  def apply(params: Params, body: Iterable[Binding], result: IR): BoundBlock = {
+    val (bodyVars, bodyVals) = body.map {
+      case Binding(name, value, scope) => (BoundVar(name, scope, value.typ), value)
+    }.unzip
+    BoundBlock(params, bodyVars.toFastSeq, (bodyVals ++ Iterable(result)).toFastSeq)
+  }
+
+  def apply(result: IR): BoundBlock =
+    BoundBlock(Params.empty, FastSeq.empty, FastSeq(result))
+
+  object withResult {
+    def unapply(block: BoundBlock): Some[IR] = Some(block.result)
+  }
+
+  final case class Params(
+    eval: Seq[(Name, Type)] = Seq.empty,
+    agg: AggEnv[Type] = AggEnv.NoOp,
+    scan: AggEnv[Type] = AggEnv.NoOp,
+    relational: Seq[(Name, Type)] = Seq.empty,
+    dropEval: Boolean = false,
+  ) {
+    def evalOnly: Boolean =
+      agg == AggEnv.NoOp && scan == AggEnv.NoOp && relational.isEmpty && !dropEval
+  }
+
+  object Params {
+    val empty: Params = Params(Seq.empty, AggEnv.NoOp, AggEnv.NoOp, Seq.empty, false)
+  }
+}
+
+class BoundBlock(
+  val params: BoundBlock.Params,
+  val bodyVars: IndexedSeq[BoundVar],
+  val childrenSeq: IndexedSeq[IR],
+) extends BaseIR {
+  assert(childrenSeq.length == bodyVars.length + 1)
+
+  def result: IR = childrenSeq.last
+
+  def bindings: Iterator[Binding] = bodyVars.iterator.zip(childrenSeq.iterator).map {
+    case (BoundVar(name, scope, _), value) => Binding(name, value, scope)
+  }
+
+  override def typ: Type = result.typ
+
+  override protected def copy(newChildren: IndexedSeq[BaseIR]): BaseIR =
+    BoundBlock(params, bodyVars, newChildren.asInstanceOf[IndexedSeq[IR]])
+
+  def compose(args: BoundBlock*): BoundBlock = {
+    var newBodyVars = bodyVars
+    var newChildren = childrenSeq
+    var newParams = BoundBlock.Params.empty
+    assert(params.evalOnly)
+    (params.eval, args).zipped.map { case ((name, typ), arg) =>
+      assert(
+        typ == arg.typ,
+        s"block param ${name} given arg of type ${arg.typ}, expected $typ",
+      )
+      if (arg.params != BoundBlock.Params.empty) {
+        assert(newParams == BoundBlock.Params.empty, "compose only supports one argument with non-empty block params")
+        newParams = arg.params
+      }
+      newBodyVars = arg.bodyVars ++ FastSeq(BoundVar(name, Scope.EVAL, typ)) ++ newBodyVars
+      newChildren = arg.childrenSeq ++ newChildren
+    }
+    BoundBlock(newParams, newBodyVars, newChildren)
+  }
+
+  def bind(args: Binding*): Block = {
+    val bindingsMap = args.view.map(b => b.name -> b).toMap
+    val blockParams = params
+    for((name, typ) <- blockParams.eval) {
+      assert(bindingsMap.get(name).exists(b => b.scope == Scope.EVAL && b.value.typ == typ))
+    }
+    blockParams.agg match {
+      case AggEnv.Bind(bindings) =>
+        for((name, typ) <- bindings) {
+          assert(bindingsMap.get(name).exists(b => b.scope == Scope.AGG && b.value.typ == typ))
+        }
+      case AggEnv.NoOp =>
+      case _ => assert(false)
+    }
+    blockParams.scan match {
+      case AggEnv.Bind(bindings) =>
+        for((name, typ) <- bindings) {
+          assert(bindingsMap.get(name).exists(b => b.scope == Scope.SCAN && b.value.typ == typ))
+        }
+      case AggEnv.NoOp =>
+      case _ => assert(false)
+    }
+    assert(blockParams.relational.isEmpty)
+    assert(!blockParams.dropEval)
+
+    Block((args ++ bindings).toFastSeq, result)
+  }
+
+  def apply(args: (String, IR)*): Block =
+    bind(args.map { case (name, value) => Binding(name, value) }: _*)
 }
 
 sealed abstract class BaseRef extends IR with TrivialIR {

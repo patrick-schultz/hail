@@ -602,6 +602,7 @@ object TypeCheck {
       case LiftMeOut(_) =>
       case Consume(_) =>
 
+      case x: BoundBlock => assert(x.typ == x.result.typ)
       case x: TableIR => x.typecheck()
       case x: MatrixIR => x.typecheck()
       case x: BlockMatrixIR => x.typecheck()

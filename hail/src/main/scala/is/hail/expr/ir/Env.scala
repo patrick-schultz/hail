@@ -143,6 +143,15 @@ case class BindingEnv[V](
     newEnv
   }
 
+  def lookupOption(name: Env.K): Option[(V, Int)] = {
+    scan.flatMap(_.lookupOption(name)).map((_, Scope.SCAN))
+      .orElse {
+        agg.flatMap(_.lookupOption(name)).map((_, Scope.AGG))
+      }.orElse {
+        eval.lookupOption(name).map((_, Scope.EVAL))
+      }
+  }
+
   def allEmpty: Boolean =
     eval.isEmpty && agg.forall(_.isEmpty) && scan.forall(_.isEmpty) && relational.isEmpty
 

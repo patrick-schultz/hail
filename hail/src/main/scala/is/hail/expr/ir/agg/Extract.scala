@@ -176,7 +176,7 @@ case class ArrayLenAggSig(knownLength: Boolean, nested: Seq[PhysicalAggSig]) ext
 // The result of Extract
 class Aggs(
   // The pre-extract IR
-  original: IR,
+  original: BoundBlock,
   /* map each descendant of the original ir to its extract result (all contained aggs replaced with
    * their results) */
   rewriteMap: Memo[IR],
@@ -462,7 +462,13 @@ object Extract {
       new FoldAggregator(res, accumName, otherAccumName, combOpIR)
   }
 
-  def apply(ir: IR, r: RequirednessAnalysis, isScan: Boolean = false): Aggs = {
+  def apply(ir: IR, r: RequirednessAnalysis): Aggs =
+    apply(ir, r, isScan = false)
+
+  def apply(ir: IR, r: RequirednessAnalysis, isScan: Boolean): Aggs =
+    apply(BoundBlock(ir), r, isScan)
+
+  def apply(ir: BoundBlock, r: RequirednessAnalysis, isScan: Boolean): Aggs = {
     val ab = new BoxedArrayBuilder[(InitOp, PhysicalAggSig)]()
     val seq = new BoxedArrayBuilder[(Name, IR)]()
     val ref = Ref(freshName(), null)
@@ -470,7 +476,7 @@ object Extract {
 
     val bindingNodesReferenced = Memo.empty[Unit]
     val rewriteMap = Memo.empty[IR]
-    extract(
+    extractBlock(
       ir,
       BindingEnv.empty,
       bindingNodesReferenced,
@@ -497,10 +503,49 @@ object Extract {
     )
   }
 
+  private def extractBlock(
+    block: BoundBlock,
+    // bindings in scope for init op arguments
+    env: BindingEnv[RefEquality[BaseIR]],
+    // nodes which bind variables which are referenced in init op arguments
+    bindingNodesReferenced: Memo[Unit],
+    /* map each desendant of the original ir to its extract result (all contained aggs replaced with
+     * their results) */
+    rewriteMap: Memo[IR],
+    // set of contained aggs, and the init op for each
+    ab: BoxedArrayBuilder[(InitOp, PhysicalAggSig)],
+    // set of updates for contained aggs
+    seqBuilder: BoxedArrayBuilder[(String, IR)],
+    /* Map each contained ApplyAggOp, ApplyScanOp, or AggFold, to the index of the corresponding agg
+     * state, used to perform CSE on agg ops */
+    memo: mutable.Map[IR, Int],
+    // a reference to the tuple of results of contained aggs
+    result: IR,
+    r: RequirednessAnalysis,
+    isScan: Boolean,
+  ): BoundBlock = {
+    var newEnv = env
+    val newBindings = Array.newBuilder[Binding]
+    newBindings.sizeHint(block.childrenSeq.length - 1)
+    for (binding <- block.bindings) binding match {
+      case Binding(name, value, Scope.EVAL) =>
+        val newValue = this.extract(value, newEnv, bindingNodesReferenced, rewriteMap, ab,
+          seqBuilder, memo, result, r, isScan)
+        newBindings += Binding(name, newValue)
+        newEnv = env.bindEval(name, RefEquality(block))
+      case Binding(name, value, _) =>
+        seqBuilder += name -> value
+    }
+    val newBody =
+      this.extract(result, newEnv, bindingNodesReferenced, rewriteMap, ab, seqBuilder,
+        memo, result, r, isScan)
+    BoundBlock(block.params, newBindings.result(), newBody)
+  }
+
   private def extract(
     ir: IR,
     // bindings in scope for init op arguments
-    env: BindingEnv[RefEquality[IR]],
+    env: BindingEnv[RefEquality[BaseIR]],
     // nodes which bind variables which are referenced in init op arguments
     bindingNodesReferenced: Memo[Unit],
     /* map each desendant of the original ir to its extract result (all contained aggs replaced with
@@ -544,8 +589,9 @@ object Extract {
           case Binding(name, value, _) =>
             seqBuilder += name -> value
         }
-        val newBody = this.extract(result, newEnv, bindingNodesReferenced, rewriteMap, ab, seqBuilder,
-          memo, result, r, isScan)
+        val newBody =
+          this.extract(result, newEnv, bindingNodesReferenced, rewriteMap, ab, seqBuilder,
+            memo, result, r, isScan)
         Block(newBindings.result(), newBody)
       case x: ApplyAggOp if !isScan =>
         val idx = memo.getOrElseUpdate(

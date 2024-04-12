@@ -1655,10 +1655,7 @@ object LowerTableIR {
         val lc = lower(child)
         if (!ContainsScan(newRow)) {
           lc.mapPartition(Some(child.typ.key)) { rows =>
-            Let(
-              FastSeq(TableIR.globalName -> lc.globals),
-              mapIR(rows)(row => Let(FastSeq(TableIR.rowName -> row), newRow)),
-            )
+            mapIR(rows)(row => newRow(TableIR.globalName -> lc.globals, TableIR.rowName -> row))
           }
         } else {
           val aggs = agg.Extract(newRow, analyses.requirednessAnalysis, isScan = true)

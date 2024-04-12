@@ -48,6 +48,7 @@ class Requiredness(val usesAndDefs: UsesAndDefs, ctx: ExecuteContext) {
 
   def lookup(node: IR): TypeWithRequiredness = tcoerce[TypeWithRequiredness](cache(node))
   def lookupAs[T <: TypeWithRequiredness](node: IR): T = tcoerce[T](cache(node))
+  def lookupAs[T <: TypeWithRequiredness](block: BoundBlock): T = lookupAs[T](block.result)
   def lookup(node: TableIR): RTable = tcoerce[RTable](cache(node))
   def lookup(node: BlockMatrixIR): RBlockMatrix = tcoerce[RBlockMatrix](cache(node))
 

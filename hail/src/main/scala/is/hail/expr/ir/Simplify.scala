@@ -720,11 +720,9 @@ object Simplify {
       val uid = freshName()
       TableAggregate(
         child,
-        AggLet(
-          uid,
-          newRow,
+        Block(
+          newRow.bindings.toFastSeq :+ Binding(uid, newRow.result, Scope.AGG),
           Subst(query, BindingEnv(agg = Some(Env(TableIR.rowName -> Ref(uid, newRow.typ))))),
-          isScan = false,
         ),
       )
 
@@ -875,9 +873,10 @@ object Simplify {
 
     case TableKeyBy(child, key, _) if key == child.typ.key => child
 
-    case TableMapRows(child, Ref(n, _)) if n == TableIR.rowName => child
+    case TableMapRows(child, BoundBlock.withResult(Ref(n, _))) if n == TableIR.rowName =>
+      child
 
-    case TableMapRows(child, MakeStruct(fields))
+    case TableMapRows(child, BoundBlock.withResult(MakeStruct(fields)))
         if fields.length == child.typ.rowType.size
           && fields.zip(child.typ.rowType.fields).forall { case ((_, ir), field) =>
             ir == GetField(Ref(TableIR.rowName, field.typ), field.name)
@@ -889,7 +888,8 @@ object Simplify {
       TableRename(child, Map(renamedPairs: _*), Map.empty)
 
     case TableMapRows(TableMapRows(child, newRow1), newRow2) if !ContainsScan(newRow2) =>
-      TableMapRows(child, Let(FastSeq(TableIR.rowName -> newRow1), newRow2))
+//      TableMapRows(child, Let(FastSeq("row" -> newRow1), newRow2))
+      TableMapRows(child, newRow2.compose(BoundBlock(Ref(newRow1.params.eval(0)._1, newRow1.params.eval(0)._2)), newRow1))
 
     case TableMapGlobals(child, Ref(n, _)) if n == TableIR.globalName => child
 

@@ -1156,6 +1156,21 @@ object PruneDeadFields {
     childIdx: Int,
     requestedType: Type,
     memo: ComputeMutableState,
+  ): TableType =
+    memoizeAndGetDep(
+      ctx,
+      BoundBlock(ir),
+      requestedType,
+      base,
+      memo,
+    )
+
+  def memoizeAndGetDep(
+    ctx: ExecuteContext,
+    ir: BoundBlock,
+    requestedType: Type,
+    base: TableType,
+    memo: ComputeMutableState,
   ): TableType = {
     val Seq(globalState, rowState) =
       createTypeStatesAndMemoize(ctx, ir, childIdx, requestedType, memo)
@@ -1271,6 +1286,40 @@ object PruneDeadFields {
       env.extend(bindingsStates),
     )
     bindingsStates.all.map(_._2)
+  }
+
+  def memoizeValueIR(
+    ctx: ExecuteContext,
+    block: BoundBlock,
+    requestedType: Type,
+    memo: ComputeMutableState,
+  ): BindingEnv[BoxedArrayBuilder[Type]] = {
+    memo.requestedType.bind(block, requestedType)
+
+    val bodyEnv = memoizeValueIR(ctx, block.result, requestedType, memo)
+
+    block.bindings.foldRight(bodyEnv) {
+      case (Binding(name, value, Scope.EVAL), bodyEnv) =>
+        val valueType = unifySeq(value.typ, uses(name, bodyEnv.eval))
+        unifyEnvs(
+          bodyEnv.deleteEval(name),
+          memoizeValueIR(ctx, value, valueType, memo),
+        )
+      case (Binding(name, value, Scope.SCAN), bodyEnv) =>
+        val valueType = unifySeq(value.typ, uses(name, bodyEnv.scanOrEmpty))
+        val valueEnv = memoizeValueIR(ctx, value, valueType, memo)
+        unifyEnvs(
+          bodyEnv.copy(scan = bodyEnv.scan.map(_.delete(name))),
+          valueEnv.copy(eval = Env.empty, scan = Some(valueEnv.eval)),
+        )
+      case (Binding(name, value, Scope.AGG), bodyEnv) =>
+        val valueType = unifySeq(value.typ, uses(name, bodyEnv.aggOrEmpty))
+        val valueEnv = memoizeValueIR(ctx, value, valueType, memo)
+        unifyEnvs(
+          bodyEnv.copy(agg = bodyEnv.agg.map(_.delete(name))),
+          valueEnv.copy(eval = Env.empty, agg = Some(valueEnv.eval)),
+        )
+    }
   }
 
   /** This function does *not* necessarily bind each child node in `memo`. Known dead code is not
@@ -1824,12 +1873,7 @@ object PruneDeadFields {
         )
       case TableMapRows(child, newRow) =>
         val child2 = rebuild(ctx, child, memo)
-        val newRow2 = rebuildIR(
-          ctx,
-          newRow,
-          BindingEnv(child2.typ.rowEnv, scan = Some(child2.typ.rowEnv)),
-          memo,
-        )
+        val newRow2 = rebuildBlock(ctx, newRow, memo)
         val newRowType = newRow2.typ.asInstanceOf[TStruct]
         val child2Keyed = if (child2.typ.key.exists(k => !newRowType.hasField(k))) {
           val upcastKey = child2.typ.key.takeWhile(newRowType.hasField)
@@ -2143,6 +2187,23 @@ object PruneDeadFields {
         case ir: IR => rebuildIR(ctx, ir, BindingEnv.empty[Type], memo)
         case bmir: BlockMatrixIR => rebuild(ctx, bmir, memo)
       }.asInstanceOf[BlockMatrixIR]
+  }
+
+  def rebuildBlock(
+    ctx: ExecuteContext,
+    block: BoundBlock,
+    memo: RebuildMutableState,
+    baseEnv: BindingEnv[Type] = BindingEnv.empty,
+  ): IR = {
+    val env = baseEnv.newBlock(block.params)
+    val newBindings = new Array[Binding](block.bodyVars.length)
+    val (_, newEnv) = block.bindings.foldLeft((0, env)) {
+      case ((idx, env), Binding(name, value, scope)) =>
+        val newValue = rebuildIR(ctx, value, env.promoteScope(scope), memo)
+        newBindings(idx) = Binding(name, newValue, scope)
+        (idx + 1, env.bindInScope(name, newValue.typ, scope))
+    }
+    Block(newBindings, rebuildIR(ctx, block.result, newEnv, memo))
   }
 
   def rebuildIR(
